@@ -6,7 +6,7 @@
 #include "dds/DCPS/SubscriberImpl.h"
 #include "dds/DCPS/StaticIncludes.h"
 
-#include "GeneratedCode/MessengerTypeSupportImpl.h"
+#include "idl/MessengerTypeSupportImpl.h"
 #include <iostream>
 using namespace std;
 
