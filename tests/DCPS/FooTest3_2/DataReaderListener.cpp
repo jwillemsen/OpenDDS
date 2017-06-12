@@ -50,20 +50,28 @@ void DataReaderListenerImpl::on_data_available(DDS::DataReader_ptr reader)
       //std::cout << "SampleInfo.instance_state = " << si.instance_state << std::endl;
 
       if (si.valid_data) {
-        samples_read_++;  // Only count actual samples
+        ++samples_read_;  // Only count actual samples
       } else if (si.instance_state == DDS::NOT_ALIVE_DISPOSED_INSTANCE_STATE) {
-        ACE_DEBUG((LM_DEBUG, ACE_TEXT("%N:%l: INFO: instance is disposed\n")));
-
+        ACE_DEBUG((LM_DEBUG, ACE_TEXT("%N:%l: INFO: instance %x is disposed\n"), si.instance_handle));
+        if (foo_dr->get_key_value(foo, si.instance_handle) == DDS::RETCODE_OK)
+          {
+            ACE_DEBUG((LM_DEBUG, ACE_TEXT("%N:%l: INFO: instance %x has key value %d"), si.instance_handle, foo.a_long_value));
+          }
+        else
+          {
+            ACE_ERROR((LM_ERROR,
+                      ACE_TEXT("%N:%l: on_data_available()")
+                      ACE_TEXT(" ERROR: unable to get key values for instance %x\n"),
+                      si.instance_handle));
+          }
       } else if (si.instance_state == DDS::NOT_ALIVE_NO_WRITERS_INSTANCE_STATE) {
         ACE_DEBUG((LM_DEBUG, ACE_TEXT("%N:%l: INFO: instance is unregistered\n")));
-
       } else {
         ACE_ERROR((LM_ERROR,
                    ACE_TEXT("%N:%l: on_data_available()")
                    ACE_TEXT(" ERROR: unknown instance state: %d\n"),
                    si.instance_state));
       }
-
     } else {
       ACE_ERROR((LM_ERROR,
                  ACE_TEXT("%N:%l: on_data_available()")
