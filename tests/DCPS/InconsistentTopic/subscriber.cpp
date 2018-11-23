@@ -69,20 +69,10 @@ int ACE_TMAIN (int argc, ACE_TCHAR *argv[])
         exit(1);
       }
 
-      // activate the listener
-      DDS::DataReaderListener_var listener = new DataReaderListenerImpl;
-      DataReaderListenerImpl &listener_servant =
-        *dynamic_cast<DataReaderListenerImpl*>(listener.in());
-
-      if (CORBA::is_nil (listener.in ())) {
-        cerr << "listener is nil." << endl;
-        exit(1);
-      }
-
       // Create the Datareaders
       DDS::DataReader_var dr = sub->create_datareader(topic.in (),
                                                       DATAREADER_QOS_DEFAULT,
-                                                      listener.in (),
+                                                      DDS::DataReaderListener::_nil(),
                                                       ::OpenDDS::DCPS::DEFAULT_STATUS_MASK);
       if (CORBA::is_nil (dr.in ())) {
         cerr << "create_datareader failed." << endl;
@@ -123,12 +113,6 @@ int ACE_TMAIN (int argc, ACE_TCHAR *argv[])
       }
 
       TheServiceParticipant->shutdown ();
-
-      if (listener_servant.from_same_instance() == false)
-      {
-        cerr << "SUB: got multiple instances" << endl;
-        return 1;
-      }
     }
   catch (CORBA::Exception& e)
     {
