@@ -497,33 +497,33 @@ ACE_INET_Addr choose_single_coherent_address(const ACE_INET_Addr& address, bool 
     if (temp.get_type() == AF_INET6 && !temp.is_multicast()) {
       if (temp.is_loopback()) {
         VDBG((LM_DEBUG, "(%P|%t) NetworkAddress::choose_single_coherent_address() - "
-                   "Considering Address %C:%d (%C) - ADDING TO IPv6 LOOPBACK LIST\n",
-                   temp.get_host_addr(), temp.get_port_number(), temp.get_host_name()));
+                   "Considering Address %C:%d - ADDING TO IPv6 LOOPBACK LIST\n",
+                   temp.get_host_addr(), temp.get_port_number()));
         set6_loopback.insert(temp);
       } else if (temp.is_ipv4_mapped_ipv6() || temp.is_ipv4_compat_ipv6()) {
 #ifndef IPV6_V6ONLY
         VDBG((LM_DEBUG, "(%P|%t) NetworkAddress::choose_single_coherent_address() - "
-                   "Considering Address %C:%d (%C) - ADDING TO IPv6 MAPPED / COMPATIBLE IPv4 LIST\n",
-                   temp.get_host_addr(), temp.get_port_number(), temp.get_host_name()));
+                   "Considering Address %C:%d - ADDING TO IPv6 MAPPED / COMPATIBLE IPv4 LIST\n",
+                   temp.get_host_addr(), temp.get_port_number()));
         set6_mapped_v4.insert(temp);
 #endif  // ! IPV6_V6ONLY
       } else if (temp.is_linklocal()) {
         VDBG((LM_DEBUG, "(%P|%t) NetworkAddress::choose_single_coherent_address() - "
-                   "Considering Address %C:%d (%C) - ADDING TO IPv6 LINK-LOCAL LIST\n",
-                   temp.get_host_addr(), temp.get_port_number(), temp.get_host_name()));
+                   "Considering Address %C:%d - ADDING TO IPv6 LINK-LOCAL LIST\n",
+                   temp.get_host_addr(), temp.get_port_number()));
         set6_linklocal.insert(temp);
       } else {
         VDBG((LM_DEBUG, "(%P|%t) NetworkAddress::choose_single_coherent_address() - "
-                   "Considering Address %C:%d (%C) - ADDING TO IPv6 NORMAL LIST\n",
-                   temp.get_host_addr(), temp.get_port_number(), temp.get_host_name()));
+                   "Considering Address %C:%d - ADDING TO IPv6 NORMAL LIST\n",
+                   temp.get_host_addr(), temp.get_port_number()));
         set6.insert(temp);
       }
     }
 #endif // ACE_HAS_IPV6
     if (temp.get_type() == AF_INET && !temp.is_multicast()) {
       VDBG((LM_DEBUG, "(%P|%t) NetworkAddress::choose_single_coherent_address() - "
-                 "Considering Address %C:%d (%C) - ADDING TO IPv4 NORMAL LIST\n",
-                 temp.get_host_addr(), temp.get_port_number(), temp.get_host_name()));
+                 "Considering Address %C:%d - ADDING TO IPv4 NORMAL LIST\n",
+                 temp.get_host_addr(), temp.get_port_number()));
       set4.insert(temp);
     }
   } while (copy.next());
