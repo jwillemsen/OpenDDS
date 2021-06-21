@@ -321,6 +321,10 @@ TcpTransport::configure_i(TcpInst& config)
   // Open our acceptor object so that we can accept passive connections
   // on our config.local_address_.
 
+  VDBG_LVL ((LM_DEBUG,
+    ACE_TEXT ("(%P|%t) TcpTransport::configure_i opening acceptor on %C:%hu\n"),
+    config.local_address ().get_host_addr (), config.local_address ().get_port_number ()), 2);
+
   if (this->acceptor_->open(config.local_address(),
                             this->reactor_task()->get_reactor()) != 0) {
 

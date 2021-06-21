@@ -90,6 +90,13 @@ ACE_END_VERSIONED_NAMESPACE_DECL
     }                                                                            \
     else                                                                         \
     {                                                                            \
+      if (OpenDDS::DCPS::Transport_debug_level > 0)                              \
+      {                                                                          \
+        ACE_DEBUG ((LM_NOTICE,                                                   \
+                    ACE_TEXT ("(%P|%t) NOTICE: \"%s\" is defined in config ")    \
+                    ACE_TEXT ("file, with value \"%C\".\n"),                     \
+                    KEY, ACE_TEXT_ALWAYS_CHAR(stringvalue.c_str())));            \
+      }                                                                          \
       VALUE = ACE_TEXT_ALWAYS_CHAR(stringvalue.c_str());                         \
     }                                                                            \
   }
