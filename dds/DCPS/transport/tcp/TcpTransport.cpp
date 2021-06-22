@@ -315,15 +315,18 @@ TcpTransport::configure_i(TcpInst& config)
   // Override with DCPSDefaultAddress.
   if (config.local_address() == ACE_INET_Addr() &&
       TheServiceParticipant->default_address() != ACE_INET_Addr()) {
+    VDBG_LVL((LM_DEBUG,
+              ACE_TEXT("(%P|%t) TcpTransport::configure_i overriding with DCPSDefaultAddress\n")), 2);
     config.local_address(TheServiceParticipant->default_address());
   }
 
   // Open our acceptor object so that we can accept passive connections
   // on our config.local_address_.
-
-  VDBG_LVL ((LM_DEBUG,
-    ACE_TEXT ("(%P|%t) TcpTransport::configure_i opening acceptor on %C:%hu\n"),
-    config.local_address ().get_host_addr (), config.local_address ().get_port_number ()), 2);
+  VDBG_LVL((LM_DEBUG,
+            ACE_TEXT("(%P|%t) TcpTransport::configure_i opening acceptor for %C on %C:%hu\n"),
+            config.local_address_string().c_str(),
+            config.local_address().get_host_addr(),
+            config.local_address().get_port_number()), 2);
 
   if (this->acceptor_->open(config.local_address(),
                             this->reactor_task()->get_reactor()) != 0) {
