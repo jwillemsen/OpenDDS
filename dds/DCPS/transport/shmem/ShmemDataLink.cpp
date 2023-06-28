@@ -106,7 +106,7 @@ ShmemDataLink::stop_i()
   ACE_GUARD(ACE_Thread_Mutex, g, mutex_);
 
   if (peer_alloc_) {
-    peer_alloc_->release(0 /*don't close*/);
+    peer_alloc_->release(1 /*close*/);
   }
   delete peer_alloc_;
   peer_alloc_ = 0;
