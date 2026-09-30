@@ -16,7 +16,7 @@
 #include "DisjointSequence.h"
 #include "PoolAllocator.h"
 #include "RcObject.h"
-#include "SporadicTask.h"
+#include "SporadicEvent.h"
 #include "TimeTypes.h"
 
 #include "transport/framework/ReceivedDataSample.h"
@@ -127,6 +127,12 @@ public:
     writer_qos_.ownership_strength.value = writer_qos_ownership_strength;
   }
 
+  DDS::LifespanQosPolicy writer_qos_lifespan() const
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    return writer_qos_.lifespan;
+  }
+
   bool waiting_for_end_historic_samples() const
   {
     ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
@@ -192,12 +198,12 @@ private:
   /// Timestamp of last write/dispose/assert_liveliness from this DataWriter
   MonotonicTimePoint last_liveliness_activity_time_;
 
-  typedef PmfSporadicTask<WriterInfo> WriterInfoSporadicTask;
+  typedef PmfNowEvent<WriterInfo> WriterInfoEvent;
 
-  const RcHandle<WriterInfoSporadicTask> historic_samples_sweeper_task_;
+  const SporadicEvent_rch historic_samples_sweeper_task_;
   void sweep_historic_samples(const MonotonicTimePoint& now);
 
-  const RcHandle<WriterInfoSporadicTask> liveliness_check_task_;
+  const SporadicEvent_rch liveliness_check_task_;
   void check_liveliness(const MonotonicTimePoint& now);
 
   /// Temporary holding place for samples received before

@@ -42,11 +42,25 @@ RtpsUdpInst::RtpsUdpInst(const OPENDDS_STRING& name,
   , responsive_mode_(*this, &RtpsUdpInst::responsive_mode, &RtpsUdpInst::responsive_mode)
   , send_delay_(*this, &RtpsUdpInst::send_delay, &RtpsUdpInst::send_delay)
   , opendds_discovery_guid_(GUID_UNKNOWN)
-  , actual_local_address_(NetworkAddress::default_IPV4)
-#ifdef ACE_HAS_IPV6
-  , ipv6_actual_local_address_(NetworkAddress::default_IPV6)
-#endif
 {}
+
+AddressFamily
+RtpsUdpInst::address_family() const
+{
+  return get_address_family(config_key("ADDRESS_FAMILY").c_str());
+}
+
+bool
+RtpsUdpInst::address_family(AddressFamily value)
+{
+  return set_address_family(config_key("ADDRESS_FAMILY").c_str(), value);
+}
+
+bool
+RtpsUdpInst::address_family(const char* value)
+{
+  return set_address_family(config_key("ADDRESS_FAMILY").c_str(), value);
+}
 
 void
 RtpsUdpInst::send_buffer_size(ACE_INT32 sbs)
@@ -581,7 +595,7 @@ RtpsUdpInst::rtps_relay_address(const NetworkAddress& address)
   TheServiceParticipant->config_store()->set(config_key("DATA_RTPS_RELAY_ADDRESS").c_str(),
                                              address,
                                              ConfigStoreImpl::Format_Required_Port,
-                                             ConfigStoreImpl::Kind_IPV4);
+                                             ConfigStoreImpl::Kind_ANY);
 }
 
 NetworkAddress
@@ -590,7 +604,7 @@ RtpsUdpInst::rtps_relay_address() const
   return TheServiceParticipant->config_store()->get(config_key("DATA_RTPS_RELAY_ADDRESS").c_str(),
                                                     NetworkAddress::default_IPV4,
                                                     ConfigStoreImpl::Format_Required_Port,
-                                                    ConfigStoreImpl::Kind_IPV4);
+                                                    ConfigStoreImpl::Kind_ANY);
 }
 
 void
@@ -611,7 +625,7 @@ RtpsUdpInst::stun_server_address(const NetworkAddress& address)
   TheServiceParticipant->config_store()->set(config_key("DATA_STUN_SERVER_ADDRESS").c_str(),
                                              address,
                                              ConfigStoreImpl::Format_Required_Port,
-                                             ConfigStoreImpl::Kind_IPV4);
+                                             ConfigStoreImpl::Kind_ANY);
 }
 
 NetworkAddress
@@ -620,7 +634,7 @@ RtpsUdpInst::stun_server_address() const
   return TheServiceParticipant->config_store()->get(config_key("DATA_STUN_SERVER_ADDRESS").c_str(),
                                                     NetworkAddress::default_IPV4,
                                                     ConfigStoreImpl::Format_Required_Port,
-                                                    ConfigStoreImpl::Kind_IPV4);
+                                                    ConfigStoreImpl::Kind_ANY);
 }
 
 TransportImpl_rch
@@ -636,6 +650,7 @@ RtpsUdpInst::dump_to_str(DDS::DomainId_t domain) const
   ret += formatNameForDump("send_buffer_size") + to_dds_string(send_buffer_size()) + '\n';
   ret += formatNameForDump("rcv_buffer_size") + to_dds_string(rcv_buffer_size()) + '\n';
   ret += formatNameForDump("use_multicast") + (use_multicast() ? "true" : "false") + '\n';
+  ret += formatNameForDump("address_family") + address_family_name(address_family()) + '\n';
   ret += formatNameForDump("ttl") + to_dds_string(ttl()) + '\n';
   ret += formatNameForDump("multicast_interface") + multicast_interface() + '\n';
   ret += formatNameForDump("anticipated_fragments") + to_dds_string(unsigned(anticipated_fragments())) + '\n';
@@ -658,7 +673,8 @@ RtpsUdpInst::dump_to_str(DDS::DomainId_t domain) const
 size_t
 RtpsUdpInst::populate_locator(TransportLocator& info,
                               ConnectionInfoFlags flags,
-                              DDS::DomainId_t domain) const
+                              DDS::DomainId_t domain,
+                              const GUID_t& participant) const
 {
   using namespace OpenDDS::RTPS;
 
@@ -667,20 +683,28 @@ RtpsUdpInst::populate_locator(TransportLocator& info,
 
   // multicast first so it's preferred by remote peers
   const NetworkAddress multicast_group_addr = multicast_group_address(domain);
-  if ((flags & CONNINFO_MULTICAST) && use_multicast() && multicast_group_addr != NetworkAddress::default_IPV4) {
+  if (use_ipv4(address_family()) && (flags & CONNINFO_MULTICAST) &&
+      use_multicast() && multicast_group_addr != NetworkAddress::default_IPV4) {
     grow(locators);
     address_to_locator(locators[idx++], multicast_group_addr.to_addr());
   }
 #ifdef ACE_HAS_IPV6
   const NetworkAddress ipv6_multicast_group_addr = ipv6_multicast_group_address(domain);
-  if ((flags & CONNINFO_MULTICAST) && use_multicast() && ipv6_multicast_group_addr != NetworkAddress::default_IPV6) {
+  if (use_ipv6(address_family()) && (flags & CONNINFO_MULTICAST) &&
+      use_multicast() &&
+      ipv6_multicast_group_addr != NetworkAddress::default_IPV6) {
     grow(locators);
     address_to_locator(locators[idx++], ipv6_multicast_group_addr.to_addr());
   }
 #endif
 
-  if (flags & CONNINFO_UNICAST) {
-    const NetworkAddress addr = (actual_local_address_ == NetworkAddress::default_IPV4) ? local_address() : actual_local_address_;
+  NetworkAddress my_actual_local_address = actual_local_address(domain, participant);
+#ifdef ACE_HAS_IPV6
+  NetworkAddress my_ipv6_actual_local_address = ipv6_actual_local_address(domain, participant);
+#endif
+
+  if ((flags & CONNINFO_UNICAST) && use_ipv4(address_family())) {
+    const NetworkAddress addr = (my_actual_local_address == NetworkAddress::default_IPV4) ? local_address() : my_actual_local_address;
     if (addr != NetworkAddress::default_IPV4) {
       if (advertised_address() != NetworkAddress::default_IPV4) {
         grow(locators);
@@ -706,8 +730,10 @@ RtpsUdpInst::populate_locator(TransportLocator& info,
         address_to_locator(locators[idx++], addr.to_addr());
       }
     }
+  }
 #ifdef ACE_HAS_IPV6
-    const NetworkAddress addr6 = (ipv6_actual_local_address_ == NetworkAddress::default_IPV6) ? ipv6_local_address() : ipv6_actual_local_address_;
+  if ((flags & CONNINFO_UNICAST) && use_ipv6(address_family())) {
+    const NetworkAddress addr6 = (my_ipv6_actual_local_address == NetworkAddress::default_IPV6) ? ipv6_local_address() : my_ipv6_actual_local_address;
     if (addr6 != NetworkAddress::default_IPV6) {
       if (ipv6_advertised_address() != NetworkAddress::default_IPV6) {
         grow(locators);
@@ -733,8 +759,8 @@ RtpsUdpInst::populate_locator(TransportLocator& info,
         address_to_locator(locators[idx++], addr6.to_addr());
       }
     }
-#endif
   }
+#endif
 
   info.transport_type = "rtps_udp";
   RTPS::locators_to_blob(locators, VENDORID_OPENDDS, info.data);
@@ -758,7 +784,7 @@ void
 RtpsUdpInst::update_locators(const GUID_t& remote_id,
                              const TransportLocatorSeq& locators,
                              DDS::DomainId_t domain,
-                             DomainParticipantImpl* participant)
+                             const GUID_t& participant)
 {
   TransportImpl_rch imp = get_or_create_impl(domain, participant);
   if (imp) {
@@ -772,7 +798,7 @@ RtpsUdpInst::get_last_recv_locator(const GUID_t& remote_id,
                                    const GuidVendorId_t& vendor_id,
                                    TransportLocator& locator,
                                    DDS::DomainId_t domain,
-                                   DomainParticipantImpl* participant)
+                                   const GUID_t& participant)
 {
   TransportImpl_rch imp = get_or_create_impl(domain, participant);
   if (imp) {
@@ -784,7 +810,7 @@ RtpsUdpInst::get_last_recv_locator(const GUID_t& remote_id,
 void
 RtpsUdpInst::append_transport_statistics(TransportStatisticsSequence& seq,
                                          DDS::DomainId_t domain,
-                                         DomainParticipantImpl* participant)
+                                         const GUID_t& participant)
 {
   TransportImpl_rch imp = get_or_create_impl(domain, participant);
   if (imp) {
@@ -792,6 +818,32 @@ RtpsUdpInst::append_transport_statistics(TransportStatisticsSequence& seq,
     rtps_impl->append_transport_statistics(seq);
   }
 }
+
+NetworkAddress
+RtpsUdpInst::actual_local_address(DDS::DomainId_t domain,
+                                  const GUID_t& participant) const
+{
+  TransportImpl_rch imp = get_impl(domain, participant);
+  if (imp) {
+    RtpsUdpTransport_rch rtps_impl = static_rchandle_cast<RtpsUdpTransport>(imp);
+    return rtps_impl->core().actual_local_address();
+  }
+  return NetworkAddress::default_IPV4;
+}
+
+#ifdef ACE_HAS_IPV6
+NetworkAddress
+RtpsUdpInst::ipv6_actual_local_address(DDS::DomainId_t domain,
+                                  const GUID_t& participant) const
+{
+  TransportImpl_rch imp = get_impl(domain, participant);
+  if (imp) {
+    RtpsUdpTransport_rch rtps_impl = static_rchandle_cast<RtpsUdpTransport>(imp);
+    return rtps_impl->core().ipv6_actual_local_address();
+  }
+  return NetworkAddress::default_IPV6;
+}
+#endif
 
 } // namespace DCPS
 } // namespace OpenDDS

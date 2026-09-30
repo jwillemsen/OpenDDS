@@ -153,6 +153,61 @@ This causes the different configuration mechanisms to be processed in the follow
 Users can store configuration data for their applications in the configuration store.
 Users taking advantage of this capability should use the section names of ``APP`` and ``USER`` which are reserved for this purpose.
 
+.. _config-network-addresses:
+
+Network Addresses, Hostnames, and IPv6
+======================================
+
+OpenDDS network address properties accept numeric IP addresses or hostnames.
+Using a numeric address avoids dependence on hostname and DNS configuration.
+When a port is included with a numeric IPv6 address, enclose the address in
+brackets, for example ``[2001:db8::10]:7400``.
+
+Some transports need to advertise an address that peers can use to reach the
+local process.
+An explicitly configured transport ``local_address`` determines this address.
+For IPv4, :prop:`[common]DCPSDefaultAddress` can provide a process-wide default
+when a transport-specific address is not set.
+Otherwise, TCP and UDP can bind a wildcard address and use a hostname selected
+from the system's network interfaces as the advertised address.
+
+OpenDDS prefers a non-loopback fully qualified domain name (FQDN) that resolves
+back to one of the host's network interfaces.
+If it can not find one, it falls back in order to a resolvable short hostname,
+a numeric non-loopback address, or a loopback hostname.
+The warning that begins ``Could not find FQDN`` identifies the selected
+fallback.
+The fallback may be sufficient for same-host testing but may not be reachable
+by peers on other hosts.
+
+FQDN resolution depends on operating-system configuration:
+
+* On Linux and other Unix-like systems, ensure that the hostname resolves to a
+  local non-loopback address using DNS or the system hosts file.
+* On Windows, ensure that the computer has an appropriate primary or
+  connection-specific DNS suffix and that the resulting full computer name
+  resolves to a local address.
+  The full computer name and DNS suffixes are shown by ``ipconfig /all``.
+
+If changing system hostname or DNS configuration is undesirable, set
+:prop:`[common]DCPSDefaultAddress` to an externally reachable IPv4 address or
+set the applicable transport's ``local_address`` explicitly.
+Transport-specific settings are preferable when different transports should
+use different interfaces.
+
+IPv6 support is enabled at build time with the OpenDDS ``configure`` script's
+``--ipv6`` option, which builds ACE/TAO and OpenDDS with ``ACE_HAS_IPV6``.
+An IPv6-enabled build also supports IPv4; it is not an IPv6-only build.
+Properties whose names begin with ``Ipv6`` or ``ipv6_`` configure IPv6
+addresses separately from their IPv4 counterparts.
+In particular, :prop:`[common]DCPSDefaultAddress` is IPv4-only and is not the
+default for IPv6 local-address properties.
+
+RTPS discovery and the :ref:`rtps-udp-transport` use separate IPv4 and IPv6
+sockets in an IPv6-enabled build.
+Configuring one family's addresses does not currently disable the other
+family.
+
 .. _config-environment-variables:
 
 Configuration with Environment Variables
@@ -444,7 +499,6 @@ For example:
     - :prop:`[transport@udp]local_address`
     - :prop:`[transport@multicast]local_address`
     - :prop:`[transport@rtps_udp]local_address`
-    - :prop:`[transport@rtps_udp]ipv6_local_address`
     - :prop:`[transport@rtps_udp]multicast_interface`
     - :prop:`[rtps_discovery]SedpLocalAddress`
     - :prop:`[rtps_discovery]SpdpLocalAddress`
@@ -473,6 +527,13 @@ For example:
         This can either be a :sec:`repository` or :sec:`rtps_discovery` section
 
     See :ref:`config-disc` for details about configuring discovery.
+
+  .. prop:: DCPSEventDispatcherThreads=<n>
+    :default: ``1``
+
+    Number of threads used by the process-wide ``EventDispatcher`` created by ``Service_Participant``.
+    This dispatcher is used by OpenDDS internal services and must always have at least one thread.
+    Note: This value is currently only read and used at startup for EventDispatcher creation.
 
   .. prop:: DCPSGlobalTransportConfig=<name>|$file
     :default: The default configuration is used as described in :ref:`run_time_configuration--overview`.
@@ -1113,6 +1174,14 @@ Those properties, along with options specific to OpenDDS's RTPS discovery implem
 
 .. sec:: rtps_discovery/<inst_name>
 
+  .. prop:: AddressFamily=ipv4|ipv6|dual
+    :default: ``dual`` when IPv6 support is built, otherwise ``ipv4``
+
+    Selects the network address families used by SPDP and SEDP.  ``ipv4`` and
+    ``ipv6`` restrict discovery sockets and advertised locators to that family.
+    ``dual`` enables every address family available in the build.  Selecting
+    ``ipv6`` in a build without IPv6 support is an error.
+
   .. prop:: ResendPeriod=<sec>
     :default: ``30``
 
@@ -1261,7 +1330,7 @@ Those properties, along with options specific to OpenDDS's RTPS discovery implem
     If ``<port>`` is ``0`` or not specified, it is calculated as described in :ref:`config-ports-used-by-sedp-unicast`.
 
   .. prop:: Ipv6SedpLocalAddress=<host>:[<port>]
-    :default: :prop:`[common]DCPSDefaultAddress`
+    :default: ``[::]:``
 
     IPv6 variant of :prop:`SedpLocalAddress`.
 
@@ -1274,7 +1343,7 @@ Those properties, along with options specific to OpenDDS's RTPS discovery implem
   .. prop:: Ipv6SpdpMulticastAddress=<host>[:<port>]
     :default: :prop:`Ipv6DefaultMulticastGroup`
 
-    IPv6 variant of :prop:`Ipv6SpdpMulticastAddress`.
+    IPv6 variant of :prop:`SpdpMulticastAddress`.
 
   .. prop:: SpdpLocalAddress=<host>[:<port>]
     :default: :prop:`[common]DCPSDefaultAddress`
@@ -1283,7 +1352,7 @@ Those properties, along with options specific to OpenDDS's RTPS discovery implem
     If ``<port>`` is ``0`` or not specified, it is calculated as described in :ref:`config-ports-used-by-spdp-unicast`.
 
   .. prop:: Ipv6SpdpLocalAddress=<host>[:<port>]
-    :default: :prop:`[common]DCPSDefaultAddress`
+    :default: ``[::]``
 
     IPv6 variant of :prop:`SpdpLocalAddress`.
 
@@ -1292,6 +1361,10 @@ Those properties, along with options specific to OpenDDS's RTPS discovery implem
     Sets the address advertised by :ref:`SEDP <sedp>`.
     Typically used when the participant is behind a firewall or NAT.
     In order to leave the port unspecified, it can be omitted from the setting but the trailing ``:`` must be present.
+
+  .. prop:: Ipv6SedpAdvertisedLocalAddress=<host>:[<port>]
+
+    IPv6 variant of :prop:`SedpAdvertisedLocalAddress`.
 
   .. prop:: SedpSendDelay=<msec>
     :default: ``10``
@@ -1311,7 +1384,8 @@ Those properties, along with options specific to OpenDDS's RTPS discovery implem
   .. prop:: SpdpSendAddrs=<host>:<port>[,<host>:<port>]...
 
     A list (comma or whitespace separated) of ``<host>:<port>`` pairs used as destinations for :ref:`SPDP <spdp>` messages.
-    This can be a combination of Unicast and Multicast addresses.
+    This can be a combination of IPv4 and IPv6 Unicast and Multicast addresses.
+    IPv6 addresses must use brackets, for example ``[::1]:7400``.
 
   .. prop:: MaxSpdpSequenceMsgResetChecks=<n>
     :default: ``3``
@@ -1438,6 +1512,25 @@ Those properties, along with options specific to OpenDDS's RTPS discovery implem
       XTypes is used for discovery when possible and only the ``CompleteTypeObject`` is provided to remote participants if available.
       This requires that :option:`opendds_idl -Gxtypes-complete` was used when compiling the IDL.
       ``2`` can also be used for backwards compatibility.
+
+  .. prop:: UseRtpsDurationFraction=<boolean>
+    :default: ``0`` (disabled)
+
+    Controls the RTPS wire representation of ``DDS::Duration_t`` values embedded in endpoint QoS policies.
+    When disabled, OpenDDS writes its historical seconds-and-nanoseconds representation. When enabled,
+    OpenDDS writes the RTPS 2.4 and later seconds-and-fractional-seconds representation, where the fraction
+    is in units of 2^-32 seconds. The setting is sampled when each DomainParticipant is created.
+
+    OpenDDS participants advertise the selected representation in participant discovery, allowing mixed-mode
+    OpenDDS deployments to decode each peer correctly. For other vendors, or when participant metadata is not
+    available, incoming durations are interpreted using the local setting.
+
+    OpenDDS releases that predate this option do not recognize the participant flag and will interpret incoming
+    fractional values as nanoseconds. Enable this option only when that compatibility tradeoff is acceptable.
+
+    This is the only supported way to control the corresponding participant flag bit
+    (``PFLAGS_RTPS_DURATION_FRACTION``). Setting that bit directly through a ``PARTICIPANT_FLAGS`` override
+    has no effect: the bit is always derived from ``UseRtpsDurationFraction`` when the participant flags are read.
 
   .. prop:: TypeLookupServiceReplyTimeout=<msec>
     :default: ``5000`` milliseconds (5 seconds).
@@ -2432,6 +2525,14 @@ See :ref:`plugins` for more information.
     This balance of network performance to context switching overhead is best determined by experimenting.
     If a machine has multiple network cards, it may improve performance by creating a transport for each network card.
 
+  .. prop:: event_dispatcher_threads=<n>
+    :default: ``1``
+
+    Number of threads used by the transport instance's ``EventDispatcher``.
+    Set this to ``0`` to reuse the global ``Service_Participant`` event dispatcher instead of creating a transport-local dispatcher.
+    This can reduce thread counts when a process contains many transport instances.
+    Note: This value is currently only read and used at startup for EventDispatcher creation.
+
   .. prop:: datalink_release_delay=<msec>
     :default: ``10000`` (10 sec)
 
@@ -2501,6 +2602,20 @@ Configuring subscribers and publishers should be identical, but different addres
 
     Enable or disable the `Nagle's algorithm <https://en.wikipedia.org/wiki/Nagle%27s_algorithm>`__.
     Enabling the Nagle's algorithm may increase throughput at the expense of increased latency.
+
+  .. prop:: send_buffer_size=<n>
+    :default: ``0`` (use platform default)
+
+    Total send buffer size in bytes for TCP payload.
+    Set this to a positive value to explicitly configure ``SO_SNDBUF``.
+    Leave it at ``0`` to use the platform's default TCP buffer sizing behavior.
+
+  .. prop:: rcv_buffer_size=<n>
+    :default: ``0`` (use platform default)
+
+    Total receive buffer size in bytes for TCP payload.
+    Set this to a positive value to explicitly configure ``SO_RCVBUF``.
+    Leave it at ``0`` to use the platform's default TCP buffer sizing behavior.
 
   .. prop:: local_address=<host>:<port>
     :default: :prop:`[common]DCPSDefaultAddress`
@@ -2761,6 +2876,15 @@ Some implementation notes related to using the ``rtps_udp`` transport protocol a
 
 .. sec:: transport@rtps_udp/<inst_name>
 
+  .. prop:: AddressFamily=ipv4|ipv6|dual
+    :default: ``dual`` when IPv6 support is built, otherwise ``ipv4``
+
+    Selects the network address families used by this transport instance.
+    ``ipv4`` and ``ipv6`` restrict sockets, multicast membership, and advertised
+    and accepted locators to that family.  ``dual`` enables every address family
+    available in the build.  Selecting ``ipv6`` in a build without IPv6 support
+    is an error.  This property is applied when the transport is initialized.
+
   .. prop:: use_multicast=<boolean>
     :default: ``1`` (enabled)
 
@@ -2794,7 +2918,7 @@ Some implementation notes related to using the ``rtps_udp`` transport protocol a
     If ``<port>`` is ``0`` or not specified, it is calculated as described in :ref:`config-ports-used-by-rtps-udp-unicast`.
 
   .. prop:: ipv6_local_address=<host>:[<port>]
-    :default: :prop:`[common]DCPSDefaultAddress`
+    :default: ``[::]:``
 
     Bind the socket to the given address and port.
     ``<port>`` can be omitted but the trailing ``:`` is required.

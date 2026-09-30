@@ -208,6 +208,7 @@ my @specs =
     'static!', 'Static libraries (no)',
     'static-runtime!', 'Link to static platform runtime libraries',
     'ipv6!', 'IPv6 support (no)',
+    'profiling!', 'Set optimization and debug levels appropriate for profiling (no)',
     'sanitize=s@', 'Build with a sanitizer, can pass multiple times' .
       $argIndent . 'or one list separated by commas, combining asan' .
       $argIndent . "and tsan isn't recommended (no sanitizers)" .
@@ -275,7 +276,7 @@ my @specs =
     'qt:s', 'Qt5 (use QTDIR or system pkg)',
     'qt-include:s', 'Qt include dir (use QT5_INCDIR, QTDIR/include,' .
       $argIndent . 'or system package)',
-    'xerces3:s', 'Xerces-C++ 3 for QoS XML handling, DDS Security',
+    'xerces3:s', 'Xerces-C++ 3 for QoS XML handling, DDS Security, DDS-XML type loading',
     'openssl:s', 'OpenSSL for DDS Security',
     'cmake:s', 'Path to CMake for compiling GoogleTest' .
       $argIndent . '(Check PATH and normal locations)',
@@ -744,6 +745,16 @@ sub ndk_clang {
 
 ## compiler
 
+sub get_compiler_type {
+  my $comp = shift;
+  return 'MSVC' if $comp =~ /cl(\.exe)?$/i;
+  return 'Clang' if $comp =~ /clang/;
+  return 'GNU' if $comp =~ /g\+\+/;
+  return undef;
+}
+
+my $compiler_type = undef;
+
 if ($has_host_compiler) {
   if ($opts{'compiler'}) {
     my $standard = 0;
@@ -769,9 +780,11 @@ if ($has_host_compiler) {
                                   "Command Prompt.\n" : '') . "Stopped";
     }
   }
-  print "compiler is: $opts{'compiler'}\n" if $opts{'verbose'};
 
-  if ($opts{'compiler'} =~ /cl(\.exe)?$/i) {
+  $compiler_type = get_compiler_type($opts{'compiler'});
+  print "compiler is: $opts{'compiler'}; type $compiler_type\n" if $opts{'verbose'};
+
+  if ($compiler_type eq 'MSVC') {
     my $savepath = $ENV{'PATH'};
     my $clpath = which($opts{'compiler'});
     if ($clpath) {
@@ -899,7 +912,7 @@ EOF
       }
     }
   }
-  elsif ($opts{'compiler'} =~ /g\+\+|clang/) {
+  elsif ($compiler_type eq 'Clang' || $compiler_type eq 'GNU') {
     my $version_string = `$opts{'compiler'} --version`;
     print "Compiler version: $version_string\n" if $opts{'verbose'};
     $opts{'is apple clang'} = $version_string =~ /^Apple/;
@@ -918,7 +931,7 @@ EOF
         print "Detected GCC >= 6, default -std=gnu++14\n" if $opts{'verbose'};
       }
     }
-    elsif ($opts{'compiler'} =~ /clang/ && $version_string !~ /^Apple / &&
+    elsif ($compiler_type eq 'Clang' && $version_string !~ /^Apple / &&
            $version_string =~ /(\d+)\.(\d+)\.(\d+)/) {
       # Apple's version of Clang doesn't default to c++11 or higher, users
       # can pass --std= to change the C++ standard version used.
@@ -940,10 +953,9 @@ EOF
 my $compile_warnings = $opts{'compile-warnings'} // '';
 if ($compile_warnings eq 'WARNING' or $compile_warnings eq 'ERROR') {
   my ($section_names, $sections) = read_ini_file("$FindBin::RealBin/build.ini");
-  my %compiler_map = ( 'g++' => 'GNU', 'clang' => 'Clang', 'cl' => 'MSVC', 'cl.exe' => 'MSVC');
-  my $section = $compiler_map{$opts{'compiler'}};
-  if ($opts{'is apple clang'}) {
-    $section = 'AppleClang';
+  my $section = $opts{'is apple clang'} ? 'AppleClang' : $compiler_type;
+  unless (exists $sections->{$section}) {
+    die "Can't determine compiler type to enable warnings.\n Stopped";
   }
   my $warning_flags = $sections->{$section}{'warning'};
   my $error_flags = $sections->{$section}{'error'};
@@ -1413,6 +1425,14 @@ if (scalar(@fsanitize)) {
   @sanitizer_linker_args = (@common, @sanitizer_linker_args);
 }
 
+my @profiling_compiler_args = ();
+my @profiling_linker_args = ();
+if ($opts{'profiling'}) {
+  my @common = ('-ggdb');
+  @profiling_compiler_args = ('-O3', @common, '-fno-omit-frame-pointer', @profiling_compiler_args);
+  @profiling_linker_args = (@common);
+}
+
 sub compiler {
   my %buildEnv = %{shift()};
   return ($buildEnv{'build'} eq 'target' && $opts{'target-compiler'}) ?
@@ -1507,6 +1527,11 @@ sub write_platform_macros {
       print $PMG
         'CPPFLAGS += ' . join(' ', @sanitizer_compiler_args) . "\n" .
         'LDFLAGS += ' . join(' ', @sanitizer_linker_args) . "\n";
+    }
+    if ($opts{'profiling'}) {
+      print $PMG
+        'CPPFLAGS += ' . join(' ', @profiling_compiler_args) . "\n" .
+        'LDFLAGS += ' . join(' ', @profiling_linker_args) . "\n";
     }
     my $plat = $opts{$buildEnv{'build'}};
     if ($pi->{'aceplatform'}) {
@@ -1983,7 +2008,7 @@ for my $key (keys %optdep) {
 }
 
 if ($is_windows && !$opts{'optimize'}) { # look for nonstandard vcpkg layout
-  for my $key ('xerces3', 'openssl') {
+  for my $key ('openssl') {
     my $env = $optdep{$key}->{env};
     if ($opts{$key} && $targetEnv{$env}) {
       if (-d $targetEnv{$env} . '/debug/lib') {
@@ -1994,6 +2019,11 @@ if ($is_windows && !$opts{'optimize'}) { # look for nonstandard vcpkg layout
         $opts{$key . '-debugbin'} = 1;
       }
     }
+  }
+  if ($opts{'xerces3'} && $targetEnv{'XERCESCROOT'} &&
+      -d $targetEnv{'XERCESCROOT'} . '/debug/lib') {
+    print "Using debug/lib subdir for xerces3 debug builds\n" if $opts{'verbose'};
+    $opts{'xerces3-debugbin'} = 1;
   }
 }
 
@@ -2749,11 +2779,16 @@ sub add_dependency_paths {
   for my $key ('openssl', 'xerces3') {
     if ($opts{$key}) {
       next if $opts{$key} eq '/usr' || $opts{$key} eq 'skip_version_check';
-      my $suffix = $slash . 'bin';
-      if ($opts{$key . '-debugbin'}) {
-        $suffix = $slash . 'debug' . $suffix;
+      my @suffixes = ($slash . 'bin');
+      if ($is_windows) {
+        push(@suffixes, $slash . 'debug' . $slash . 'bin');
+      } elsif ($opts{$key . '-debugbin'}) {
+        @suffixes = ($slash . 'debug' . $slash . 'bin');
       }
-      $dirs{$targetEnv{$optdep{$key}->{env}} . $suffix} = 1;
+      for my $suffix (@suffixes) {
+        my $dir = $targetEnv{$optdep{$key}->{env}} . $suffix;
+        $dirs{$dir} = 1 if $opts{'dry-run'} || -d $dir;
+      }
     }
   }
   for my $d (keys %dirs) {
@@ -2826,9 +2861,8 @@ if ($cloned_build) {
   unless ($opts{'static'}) {
     push_libpath(\%targetEnv, $targetEnv{'ACE_ROOT'} . $slash . 'lib');
     push_libpath(\%targetEnv, $targetEnv{'DDS_ROOT'} . $slash . 'lib');
-
-    add_dependency_paths();
   }
+  add_dependency_paths();
 
   configure_build(\%targetEnv);
 
@@ -2852,9 +2886,8 @@ else { # does not require cloned builds
   unless ($opts{'static'}) {
     push_libpath(\%targetEnv, $targetEnv{'ACE_ROOT'} . $slash . 'lib');
     push_libpath(\%targetEnv, $targetEnv{'DDS_ROOT'} . $slash . 'lib');
-
-    add_dependency_paths();
   }
+  add_dependency_paths();
 
   if ($host_tools_only) {
     write_host_workspace(\%targetEnv);
@@ -3080,13 +3113,20 @@ sub write_cmake_file {
     print_cmake_config($fh, 'features', \%features);
     print_cmake_config($fh, 'mpcopts', \@mpcopts);
 
-    print $fh "\n# Sanitizers\n";
+    print $fh "\n# Enabled Sanitizers\n";
     for my $name (sort(keys(%all_sanitizers))) {
       print_cmake_config($fh, $name, exists($enabled_sanitizers{$name}) ? 1 : 0);
     }
     if (scalar(@fsanitize)) {
+      print $fh "\n# Sanitizer Args\n";
       print_cmake_config($fh, 'SANITIZER_COMPILER_ARGS', \@sanitizer_compiler_args);
       print_cmake_config($fh, 'SANITIZER_LINKER_ARGS', \@sanitizer_linker_args);
+    }
+
+    if ($opts{'profiling'}) {
+      print $fh "\n# Profiling Args\n";
+      print_cmake_config($fh, 'PROFILING_COMPILER_ARGS', \@profiling_compiler_args);
+      print_cmake_config($fh, 'PROFILING_LINKER_ARGS', \@profiling_linker_args);
     }
   };
 

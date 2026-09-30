@@ -13,6 +13,53 @@ OPENDDS_BEGIN_VERSIONED_NAMESPACE_DECL
 namespace OpenDDS {
 namespace XTypes {
 
+namespace {
+  const size_t MAX_ALIAS_CHAIN_LENGTH = 64;
+
+  bool bound_assignable(LBound a, LBound b)
+  {
+    return a == 0 || (b != 0 && b <= a);
+  }
+
+  LBound string_bound(const TypeIdentifier& ti)
+  {
+    return ti.kind() == TI_STRING8_SMALL || ti.kind() == TI_STRING16_SMALL ?
+      ti.string_sdefn().bound : ti.string_ldefn().bound;
+  }
+
+  LBound sequence_bound(const TypeIdentifier& ti)
+  {
+    return ti.kind() == TI_PLAIN_SEQUENCE_SMALL ?
+      ti.seq_sdefn().bound : ti.seq_ldefn().bound;
+  }
+
+  bool has_default_label(const MinimalUnionMemberSeq& members)
+  {
+    for (unsigned i = 0; i < members.length(); ++i) {
+      if ((members[i].common.member_flags & IS_DEFAULT) == IS_DEFAULT) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool has_explicit_label(const MinimalUnionMemberSeq& members, ACE_CDR::Long label)
+  {
+    for (unsigned i = 0; i < members.length(); ++i) {
+      if ((members[i].common.member_flags & IS_DEFAULT) == IS_DEFAULT) {
+        continue;
+      }
+      const UnionCaseLabelSeq& labels = members[i].common.label_seq;
+      for (unsigned j = 0; j < labels.length(); ++j) {
+        if (labels[j] == label) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+}
+
 /**
  * @brief Both input type objects must be minimal
  */
@@ -95,6 +142,10 @@ bool TypeAssignability::assignable(const TypeObject& ta,
 bool TypeAssignability::assignable(const TypeIdentifier& ta,
                                    const TypeIdentifier& tb) const
 {
+  if (ta == TypeIdentifier::None || tb == TypeIdentifier::None) {
+    return false;
+  }
+
   if (ta == tb) {
     return true;
   }
@@ -203,6 +254,30 @@ bool TypeAssignability::assignable(const TypeIdentifier& ta,
   return false;
 }
 
+bool TypeAssignability::assignable(const TypeInformation& ta,
+                                   const TypeInformation& tb) const
+{
+  if (use_complete_type_objects()) {
+    const TypeIdentifier& complete_ta = ta.complete.typeid_with_size.type_id;
+    const TypeIdentifier& complete_tb = tb.complete.typeid_with_size.type_id;
+    if (complete_ta.kind() != TK_NONE && complete_tb.kind() != TK_NONE) {
+      const TypeObject& complete_to_a = tl_service_->get_type_object(complete_ta);
+      const TypeObject& complete_to_b = tl_service_->get_type_object(complete_tb);
+      if (complete_to_a.kind == EK_COMPLETE && complete_to_b.kind == EK_COMPLETE) {
+        TypeObject minimal_to_a;
+        TypeObject minimal_to_b;
+        if (tl_service_->complete_to_minimal_type_object(complete_to_a, minimal_to_a) &&
+            tl_service_->complete_to_minimal_type_object(complete_to_b, minimal_to_b)) {
+          return assignable(minimal_to_a, minimal_to_b);
+        }
+      }
+    }
+  }
+
+  return assignable(ta.minimal.typeid_with_size.type_id,
+                    tb.minimal.typeid_with_size.type_id);
+}
+
 /**
  * @brief At least one input type object must be TK_ALIAS
  */
@@ -210,7 +285,7 @@ bool TypeAssignability::assignable_alias(const MinimalTypeObject& ta,
                                          const MinimalTypeObject& tb) const
 {
   if (TK_ALIAS == ta.kind && TK_ALIAS != tb.kind) {
-    const TypeIdentifier& tia = ta.alias_type.body.common.related_type;
+    const TypeIdentifier& tia = get_base_type(ta);
     switch (tia.kind()) {
     case TK_BOOLEAN:
     case TK_BYTE:
@@ -256,7 +331,7 @@ bool TypeAssignability::assignable_alias(const MinimalTypeObject& ta,
       return false; // Future extensions
     }
   } else if (TK_ALIAS != ta.kind && TK_ALIAS == tb.kind) {
-    const TypeIdentifier& tib = tb.alias_type.body.common.related_type;
+    const TypeIdentifier& tib = get_base_type(tb);
     switch (ta.kind) {
     case TK_ANNOTATION:
       return assignable_annotation(ta, tib);
@@ -280,8 +355,8 @@ bool TypeAssignability::assignable_alias(const MinimalTypeObject& ta,
       return false; // Future extensions
     }
   } else if (TK_ALIAS == ta.kind && TK_ALIAS == tb.kind) {
-    const TypeIdentifier& tia = ta.alias_type.body.common.related_type;
-    const TypeIdentifier& tib = tb.alias_type.body.common.related_type;
+    const TypeIdentifier& tia = get_base_type(ta);
+    const TypeIdentifier& tib = get_base_type(tb);
     return assignable(tia, tib);
   }
 
@@ -394,6 +469,13 @@ bool TypeAssignability::assignable_struct(const MinimalTypeObject& ta,
     return false;
   }
 
+  // If prevent_type_widening is true, T1 can't have members that don't appear
+  // in T2.
+  if (type_consistency_.prevent_type_widening &&
+      matched_members.size() != ta.struct_type.member_seq.length()) {
+    return false;
+  }
+
   // For any member m2 of T2, if there is a member m1 of T1 with the same
   // ID, then the type KeyErased(m1.type) is-assignable-from the type
   // KeyErased(m2.type).
@@ -494,68 +576,46 @@ bool TypeAssignability::assignable_struct(const MinimalTypeObject& ta,
     }
   }
 
-  // For any string key member m2 in T2, the m1 member of T1 with the
-  // same member ID verifies m1.type.length >= m2.type.length
-  for (size_t i = 0; i < matched_members.size(); ++i) {
-    const CommonStructMember& member = matched_members[i].second->common;
-    MemberFlag flags = member.member_flags;
-    LBound bound_a, bound_b;
-    if ((flags & IS_KEY) == IS_KEY && get_string_bound(bound_b, member)) {
-      if (!get_string_bound(bound_a, matched_members[i].first->common)) {
-        return false;
-      }
-      if (bound_a < bound_b) {
-        return false;
+  if (!type_consistency_.ignore_string_bounds) {
+    // For any string key member m2 in T2, the m1 member of T1 with the
+    // same member ID verifies m1.type.length >= m2.type.length
+    for (size_t i = 0; i < matched_members.size(); ++i) {
+      const CommonStructMember& member = matched_members[i].second->common;
+      MemberFlag flags = member.member_flags;
+      LBound bound_a, bound_b;
+      if ((flags & IS_KEY) == IS_KEY && get_string_bound(bound_b, member)) {
+        if (!get_string_bound(bound_a, matched_members[i].first->common)) {
+          return false;
+        }
+        if (bound_a < bound_b) {
+          return false;
+        }
       }
     }
   }
 
-  // For any enumerated key member m2 in T2, the m1 member of T1 with
-  // the same member ID verifies that all literals in m2.type appear as
-  // literals in m1.type
-  for (size_t i = 0; i < matched_members.size(); ++i) {
-    const CommonStructMember& member = matched_members[i].second->common;
-    MemberFlag flags = member.member_flags;
-    if ((flags & IS_KEY) == IS_KEY &&
-        EK_MINIMAL == member.member_type_id.kind()) {
-      const MinimalTypeObject& tob = lookup_minimal(member.member_type_id);
-      if (TK_ENUM == tob.kind) {
-        if (!struct_rule_enum_key(tob, matched_members[i].first->common)) {
-          return false;
-        }
-      } else if (TK_ALIAS == tob.kind) {
-        const TypeIdentifier& base_b = get_base_type(tob);
-        if (EK_MINIMAL == base_b.kind()) {
-          const MinimalTypeObject& base_obj_b = lookup_minimal(base_b);
-          if (TK_ENUM == base_obj_b.kind &&
-              !struct_rule_enum_key(base_obj_b, matched_members[i].first->common)) {
+  if (!type_consistency_.ignore_sequence_bounds) {
+    // For any sequence or map key member m2 in T2, the m1 member of T1
+    // with the same member ID verifies m1.type.length >= m2.type.length
+    for (size_t i = 0; i < matched_members.size(); ++i) {
+      const CommonStructMember& member = matched_members[i].second->common;
+      MemberFlag flags = member.member_flags;
+      LBound bound_a, bound_b;
+      if ((flags & IS_KEY) == IS_KEY) {
+        if (get_sequence_bound(bound_b, member)) {
+          if (!get_sequence_bound(bound_a, matched_members[i].first->common)) {
             return false;
           }
-        }
-      }
-    }
-  }
-
-  // For any sequence or map key member m2 in T2, the m1 member of T1
-  // with the same member ID verifies m1.type.length >= m2.type.length
-  for (size_t i = 0; i < matched_members.size(); ++i) {
-    const CommonStructMember& member = matched_members[i].second->common;
-    MemberFlag flags = member.member_flags;
-    LBound bound_a, bound_b;
-    if ((flags & IS_KEY) == IS_KEY) {
-      if (get_sequence_bound(bound_b, member)) {
-        if (!get_sequence_bound(bound_a, matched_members[i].first->common)) {
-          return false;
-        }
-        if (bound_a < bound_b) {
-          return false;
-        }
-      } else if (get_map_bound(bound_b, member)) {
-        if (!get_map_bound(bound_a, matched_members[i].first->common)) {
-          return false;
-        }
-        if (bound_a < bound_b) {
-          return false;
+          if (bound_a < bound_b) {
+            return false;
+          }
+        } else if (get_map_bound(bound_b, member)) {
+          if (!get_map_bound(bound_a, matched_members[i].first->common)) {
+            return false;
+          }
+          if (bound_a < bound_b) {
+            return false;
+          }
         }
       }
     }
@@ -696,6 +756,10 @@ bool TypeAssignability::assignable_union(const MinimalTypeObject& ta,
     if (labels_set_a.size() > 0) {
       return false;
     }
+    if (has_default_label(ta.union_type.member_seq) !=
+        has_default_label(tb.union_type.member_seq)) {
+      return false;
+    }
   } else { // Must have at least one common label other than the default
     // This implementation assumes that the default member has IS_DEFAULT
     // flag turned on, but the label "default" does not map into a numeric
@@ -797,29 +861,52 @@ bool TypeAssignability::assignable_union(const MinimalTypeObject& ta,
     }
   }
 
-  // If any non-default labels of T1 that select the default member of T2,
+  // If any non-default labels of T1 select the default member of T2,
   // the type of the member in T1 is assignable from the type of the default
-  // member in T2
+  // member in T2.
   for (unsigned i = 0; i < tb.union_type.member_seq.length(); ++i) {
     const UnionMemberFlag& mem_flags_b = tb.union_type.member_seq[i].common.member_flags;
     if ((mem_flags_b & IS_DEFAULT) == IS_DEFAULT) {
-      const UnionCaseLabelSeq& label_seq_b = tb.union_type.member_seq[i].common.label_seq;
       for (unsigned j = 0; j < ta.union_type.member_seq.length(); ++j) {
+        const UnionMemberFlag& mem_flags_a = ta.union_type.member_seq[j].common.member_flags;
+        if ((mem_flags_a & IS_DEFAULT) == IS_DEFAULT) {
+          continue;
+        }
         const UnionCaseLabelSeq& label_seq_a = ta.union_type.member_seq[j].common.label_seq;
-        bool matched = false;
         for (unsigned k = 0; k < label_seq_a.length(); ++k) {
-          for (unsigned t = 0; t < label_seq_b.length(); ++t) {
-            if (label_seq_a[k] == label_seq_b[t]) {
-              const TypeIdentifier& ti_a = ta.union_type.member_seq[j].common.type_id;
-              const TypeIdentifier& ti_b = tb.union_type.member_seq[i].common.type_id;
-              if (!assignable(ti_a, ti_b)) {
-                return false;
-              }
-              matched = true;
-              break;
+          if (!has_explicit_label(tb.union_type.member_seq, label_seq_a[k])) {
+            const TypeIdentifier& ti_a = ta.union_type.member_seq[j].common.type_id;
+            const TypeIdentifier& ti_b = tb.union_type.member_seq[i].common.type_id;
+            if (!assignable(ti_a, ti_b)) {
+              return false;
             }
           }
-          if (matched) break;
+        }
+      }
+      break;
+    }
+  }
+
+  // If any non-default labels of T2 select the default member of T1,
+  // the type of T1's default member is assignable from the type of the
+  // member in T2.
+  for (unsigned i = 0; i < ta.union_type.member_seq.length(); ++i) {
+    const UnionMemberFlag& mem_flags_a = ta.union_type.member_seq[i].common.member_flags;
+    if ((mem_flags_a & IS_DEFAULT) == IS_DEFAULT) {
+      for (unsigned j = 0; j < tb.union_type.member_seq.length(); ++j) {
+        const UnionMemberFlag& mem_flags_b = tb.union_type.member_seq[j].common.member_flags;
+        if ((mem_flags_b & IS_DEFAULT) == IS_DEFAULT) {
+          continue;
+        }
+        const UnionCaseLabelSeq& label_seq_b = tb.union_type.member_seq[j].common.label_seq;
+        for (unsigned k = 0; k < label_seq_b.length(); ++k) {
+          if (!has_explicit_label(ta.union_type.member_seq, label_seq_b[k])) {
+            const TypeIdentifier& ti_a = ta.union_type.member_seq[i].common.type_id;
+            const TypeIdentifier& ti_b = tb.union_type.member_seq[j].common.type_id;
+            if (!assignable(ti_a, ti_b)) {
+              return false;
+            }
+          }
         }
       }
       break;
@@ -904,6 +991,11 @@ bool TypeAssignability::assignable_sequence(const MinimalTypeObject& ta,
   if (TK_SEQUENCE != tb.kind) {
     return false;
   }
+  if (!type_consistency_.ignore_sequence_bounds &&
+      !bound_assignable(ta.sequence_type.header.common.bound,
+                        tb.sequence_type.header.common.bound)) {
+    return false;
+  }
   return strongly_assignable(ta.sequence_type.element.common.type,
                              tb.sequence_type.element.common.type);
 }
@@ -916,9 +1008,17 @@ bool TypeAssignability::assignable_sequence(const MinimalTypeObject& ta,
                                             const TypeIdentifier& tb) const
 {
   if (TI_PLAIN_SEQUENCE_SMALL == tb.kind()) {
+    if (!type_consistency_.ignore_sequence_bounds &&
+        !bound_assignable(ta.sequence_type.header.common.bound, tb.seq_sdefn().bound)) {
+      return false;
+    }
     return strongly_assignable(ta.sequence_type.element.common.type,
                                *tb.seq_sdefn().element_identifier);
   } else if (TI_PLAIN_SEQUENCE_LARGE == tb.kind()) {
+    if (!type_consistency_.ignore_sequence_bounds &&
+        !bound_assignable(ta.sequence_type.header.common.bound, tb.seq_ldefn().bound)) {
+      return false;
+    }
     return strongly_assignable(ta.sequence_type.element.common.type,
                                *tb.seq_ldefn().element_identifier);
   } else if (EK_MINIMAL == tb.kind()) {
@@ -1287,10 +1387,18 @@ bool TypeAssignability::assignable_string(const TypeIdentifier& ta,
 {
   if (TI_STRING8_SMALL == tb.kind() || TI_STRING8_LARGE == tb.kind()) {
     if (TI_STRING8_SMALL == ta.kind() || TI_STRING8_LARGE == ta.kind()) {
+      if (!type_consistency_.ignore_string_bounds &&
+          !bound_assignable(string_bound(ta), string_bound(tb))) {
+        return false;
+      }
       return true;
     }
   } else if (TI_STRING16_SMALL == tb.kind() || TI_STRING16_LARGE == tb.kind()) {
     if (TI_STRING16_SMALL == ta.kind() || TI_STRING16_LARGE == ta.kind()) {
+      if (!type_consistency_.ignore_string_bounds &&
+          !bound_assignable(string_bound(ta), string_bound(tb))) {
+        return false;
+      }
       return true;
     }
   } else if (EK_MINIMAL == tb.kind()) {
@@ -1327,6 +1435,10 @@ bool TypeAssignability::assignable_plain_sequence(const TypeIdentifier& ta,
                                                   const TypeIdentifier& tb) const
 {
   if (TI_PLAIN_SEQUENCE_SMALL == tb.kind()) {
+    if (!type_consistency_.ignore_sequence_bounds &&
+        !bound_assignable(sequence_bound(ta), tb.seq_sdefn().bound)) {
+      return false;
+    }
     if (TI_PLAIN_SEQUENCE_SMALL == ta.kind()) {
       return strongly_assignable(*ta.seq_sdefn().element_identifier,
                                  *tb.seq_sdefn().element_identifier);
@@ -1335,6 +1447,10 @@ bool TypeAssignability::assignable_plain_sequence(const TypeIdentifier& ta,
                                  *tb.seq_sdefn().element_identifier);
     }
   } else if (TI_PLAIN_SEQUENCE_LARGE == tb.kind()) {
+    if (!type_consistency_.ignore_sequence_bounds &&
+        !bound_assignable(sequence_bound(ta), tb.seq_ldefn().bound)) {
+      return false;
+    }
     if (TI_PLAIN_SEQUENCE_SMALL == ta.kind()) {
       return strongly_assignable(*ta.seq_sdefn().element_identifier,
                                  *tb.seq_ldefn().element_identifier);
@@ -1369,6 +1485,10 @@ bool TypeAssignability::assignable_plain_sequence(const TypeIdentifier& ta,
                                                   const MinimalTypeObject& tb) const
 {
   if (TK_SEQUENCE == tb.kind) {
+    if (!type_consistency_.ignore_sequence_bounds &&
+        !bound_assignable(sequence_bound(ta), tb.sequence_type.header.common.bound)) {
+      return false;
+    }
     if (TI_PLAIN_SEQUENCE_SMALL == ta.kind()) {
       return strongly_assignable(*ta.seq_sdefn().element_identifier,
                                  tb.sequence_type.element.common.type);
@@ -1598,6 +1718,13 @@ bool TypeAssignability::strongly_assignable(const TypeIdentifier& tia,
     return true;
   }
   return false;
+}
+
+bool TypeAssignability::use_complete_type_objects() const
+{
+  return type_consistency_.prevent_type_widening ||
+    !type_consistency_.ignore_sequence_bounds ||
+    !type_consistency_.ignore_string_bounds;
 }
 
 /**
@@ -1970,23 +2097,35 @@ bool TypeAssignability::hold_key(const TypeIdentifier& ti, MinimalTypeObject& to
 
 /**
  * @brief The input must be of type TK_ALIAS
- * Return the non-alias base type identifier of the input
+ * Return the non-alias base type identifier of the input, or
+ * TypeIdentifier::None if the alias chain is cyclic or too deep.
  */
 const TypeIdentifier& TypeAssignability::get_base_type(const MinimalTypeObject& type) const
 {
-  const TypeIdentifier& base = type.alias_type.body.common.related_type;
-  switch (base.kind()) {
-  case EK_COMPLETE:
-  case EK_MINIMAL: {
-    const MinimalTypeObject& type_obj = lookup_minimal(base);
-    if (TK_ALIAS == type_obj.kind) {
-      return get_base_type(type_obj);
+  TypeIdentifierSet visited;
+  const MinimalTypeObject* current = &type;
+
+  for (size_t i = 0; i < MAX_ALIAS_CHAIN_LENGTH; ++i) {
+    const TypeIdentifier& base = current->alias_type.body.common.related_type;
+    switch (base.kind()) {
+    case EK_COMPLETE:
+    case EK_MINIMAL: {
+      if (!visited.insert(base).second) {
+        return TypeIdentifier::None;
+      }
+      const MinimalTypeObject& type_obj = lookup_minimal(base);
+      if (TK_ALIAS == type_obj.kind) {
+        current = &type_obj;
+        continue;
+      }
+      return base;
     }
-    return base;
+    default:
+      return base;
+    }
   }
-  default:
-    return base;
-  }
+
+  return TypeIdentifier::None;
 }
 
 /**

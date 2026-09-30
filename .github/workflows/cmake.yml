@@ -2,6 +2,9 @@ name: "CMake Builds"
 
 on:
   push:
+    branches-ignore:
+      - 'dependabot/**'
+      - 'workflows/**'
     paths:
       - '**'
       # Don't run this workflow if the only files that changed are the
@@ -56,7 +59,7 @@ concurrency:
 env:
   TRIGGERING_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
   VCPKG_INSTALLED_DIR: ${{ github.workspace }}\vcpkg\installed
-  VCPKG_GIT_COMMIT: d5ec528843d29e3a52d745a64b469f810b2cedbf
+  VCPKG_GIT_COMMIT: 66c0373dc7fca549e5803087b9487edfe3aca0a1
   VCPKG_TOOLCHAIN_FILE: ${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
   CTEST_OUTPUT_ON_FAILURE: ON
 
@@ -67,22 +70,24 @@ jobs:
 
     steps:
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Checkout MPC
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/MPC
         path: MPC
     - name: Checkout ACE/TAO
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         path: OpenDDS/build/ACE_TAO
     - name: Install xerces and Qt5
-      run: sudo apt-get -y install libxerces-c-dev qtbase5-dev
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install libxerces-c-dev qtbase5-dev
     - uses: lukka/get-cmake@latest
       with:
         cmakeVersion: "3.23"
@@ -148,17 +153,17 @@ jobs:
 
     steps:
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Checkout MPC
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/MPC
         path: MPC
     - name: Checkout ACE/TAO
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         path: OpenDDS/build/ACE_TAO
@@ -219,17 +224,17 @@ jobs:
 
     steps:
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Checkout MPC
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/MPC
         path: MPC
     - name: Checkout ACE/TAO
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         path: OpenDDS/build/ACE_TAO
@@ -271,7 +276,7 @@ jobs:
 
     steps:
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
@@ -328,17 +333,17 @@ jobs:
         vcpkgGitCommitId: '${{ env.VCPKG_GIT_COMMIT }}'
         runVcpkgInstall: true
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Checkout MPC
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/MPC
         path: MPC
     - name: Checkout ACE/TAO
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         ref: ace6tao2
@@ -389,17 +394,17 @@ jobs:
         cmakeVersion: "3.23"
         ninjaVersion: "latest"
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Checkout MPC
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/MPC
         path: MPC
     - name: Checkout ACE/TAO
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         path: OpenDDS/build/ACE_TAO
@@ -446,17 +451,17 @@ jobs:
         vcpkgGitCommitId: '${{ env.VCPKG_GIT_COMMIT }}'
         runVcpkgInstall: true
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Checkout MPC
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/MPC
         path: MPC
     - name: Checkout ACE/TAO
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         ref: ace6tao2
@@ -504,17 +509,17 @@ jobs:
         vcpkgGitCommitId: '${{ env.VCPKG_GIT_COMMIT }}'
         runVcpkgInstall: true
     - name: Checkout OpenDDS
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Checkout MPC
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/MPC
         path: MPC
     - name: Checkout ACE/TAO
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         path: OpenDDS/build/ACE_TAO

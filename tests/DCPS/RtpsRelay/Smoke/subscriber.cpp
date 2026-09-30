@@ -162,7 +162,7 @@ ACE_TMAIN(int argc, ACE_TCHAR *argv[])
     OpenDDS::DCPS::DomainParticipantImpl* dp_impl =
       dynamic_cast<OpenDDS::DCPS::DomainParticipantImpl*>(participant.in());
 
-    OpenDDS::DCPS::RcHandle<OpenDDS::RTPS::RtpsDiscovery> disc = OpenDDS::DCPS::static_rchandle_cast<OpenDDS::RTPS::RtpsDiscovery>(TheServiceParticipant->get_discovery(42));
+    OpenDDS::DCPS::RcHandle<OpenDDS::RTPS::RtpsDiscovery> disc = OpenDDS::DCPS::dynamic_rchandle_cast<OpenDDS::RTPS::RtpsDiscovery>(TheServiceParticipant->get_discovery(42));
     const OpenDDS::DCPS::GUID_t guid = dp_impl->get_id();
     OpenDDS::DCPS::RcHandle<OpenDDS::DCPS::TransportInst> discovery_inst = disc->sedp_transport_inst(42, guid);
     discovery_inst->count_messages(true);
@@ -238,7 +238,11 @@ ACE_TMAIN(int argc, ACE_TCHAR *argv[])
       stress_test(reader, participant, type_name, sub);
       status = EXIT_SUCCESS;
     } else {
-      dcs->wait_for("Subscriber", "Subscriber", "count_1");
+      if (!args.second_pub) {
+        dcs->wait_for("Subscriber", "Subscriber", "count_1");
+      } else {
+        dcs->wait_for("Subscriber", "Subscriber", "count_3");
+      }
       status = listener_servant->is_valid() ? EXIT_SUCCESS : EXIT_FAILURE;
 
 #if OPENDDS_HAS_JSON_VALUE_WRITER
@@ -246,7 +250,7 @@ ACE_TMAIN(int argc, ACE_TCHAR *argv[])
       OpenDDS::DCPS::TransportStatisticsSequence stats;
       disc->append_transport_statistics(42, guid, stats);
       if (transport_inst) {
-        transport_inst->append_transport_statistics(stats, 42, dp_impl);
+        transport_inst->append_transport_statistics(stats, 42, guid);
       }
 
       for (unsigned int i = 0; i != stats.length(); ++i) {

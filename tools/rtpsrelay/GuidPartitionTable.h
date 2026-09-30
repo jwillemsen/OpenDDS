@@ -3,6 +3,7 @@
 
 #include "Config.h"
 #include "RelayStatisticsReporter.h"
+#include "GuidAddrSet.h"
 
 #include <dds/rtpsrelaylib/PartitionIndex.h>
 #include <dds/rtpsrelaylib/RelayTypeSupportImpl.h>
@@ -18,7 +19,7 @@ namespace RtpsRelay {
 // FUTURE: Make this configurable, adaptive, etc.
 const size_t MAX_SLOT_SIZE = 64;
 
-class GuidPartitionTable {
+class GuidPartitionTable : public OpenDDS::DCPS::RcObject {
 public:
   enum Result {
     ADDED,
@@ -27,14 +28,24 @@ public:
   };
 
   GuidPartitionTable(const Config& config,
+                     const OpenDDS::DCPS::ReactorTask_rch& reactor_task,
                      const ACE_INET_Addr& address,
+                     GuidAddrSet& guid_addr_set,
                      RelayPartitionsDataWriter_var relay_partitions_writer,
-                     RelayStatisticsReporter& relay_stats_reporter)
+                     RelayStatisticsReporter& relay_stats_reporter,
+                     AsyncDiscoveryCacheUpdateDataWriter_var async_disc_cache_update_writer,
+                     AsyncDiscoveryCachePruneDataWriter_var async_disc_cache_prune_writer)
     : config_(config)
+    , reactor_task_(reactor_task)
     , address_(OpenDDS::DCPS::LogAddr(address).c_str())
+    , guid_addr_set_(guid_addr_set)
     , relay_stats_reporter_(relay_stats_reporter)
     , relay_partitions_writer_(relay_partitions_writer)
+    , async_disc_cache_update_writer_(async_disc_cache_update_writer)
+    , async_disc_cache_prune_writer_(async_disc_cache_prune_writer)
   {}
+
+  ~GuidPartitionTable();
 
   // Insert a reader/writer guid and its partitions.
   Result insert(const OpenDDS::DCPS::GUID_t& guid,
@@ -48,7 +59,7 @@ public:
   /// Add to 'guids' the GUIDs of participants that should receive messages based on 'partitions'.
   /// If 'allowed' is empty, it has no effect. Otherwise all entires added to 'guids' must be in 'allowed'.
   template <typename T>
-  void lookup(GuidSet& guids, const T& partitions, const GuidSet& allowed) const
+  void lookup(GuidSet& guids, const T& partitions, const GuidSet& allowed = GuidSet{}) const
   {
     const auto limits = allowed.empty() ? nullptr : &allowed;
     ACE_GUARD(ACE_Thread_Mutex, g, mutex_);
@@ -60,6 +71,23 @@ public:
     }
     relay_stats_reporter_.partition_index_cache(partition_index_.cache_size());
   }
+
+  using DeniedPartitions = std::unordered_map<std::string, OpenDDS::DCPS::MonotonicTimePoint>;
+
+  void deny_partitions(const DeniedPartitions& partitions);
+
+  void cleanup_denied_partitions(const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+  bool is_denied(const StringSet& partitions) const;
+
+  void update_cert_partitions_cache(const std::string& key, const StringSet& partitions, const OpenDDS::DCPS::GUID_t& guid);
+
+  void lookup_cert_partitions_cache(StringSet& partitions, const std::string& key, const OpenDDS::DCPS::GUID_t& guid);
+
+  void handle_async_disc_cache_update(const AsyncDiscoveryCacheEntrySeq& entries,
+    const std::string& from_relay, const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+  void handle_async_disc_cache_prune(const StringSequence& keys, const std::string& from_relay);
 
 private:
   void remove_from_cache(const OpenDDS::DCPS::GUID_t& guid)
@@ -115,7 +143,7 @@ private:
   {
     for (const auto& relay_partition : relay_partitions) {
       if (relay_partitions_writer_->write(relay_partition, DDS::HANDLE_NIL) != DDS::RETCODE_OK) {
-        ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: failed to write Relay Partitions\n"));
+        ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: GuidPartitionTable::write_relay_partitions: failed to write Relay Partitions\n"));
       }
     }
   }
@@ -160,10 +188,24 @@ private:
     }
   }
 
+  void remove_from_local_async_disc_cache(const AsyncDiscoveryCacheEntrySeq& entries,
+    const std::string& from_relay, const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+  void update_remote_async_disc_cache(const AsyncDiscoveryCacheEntrySeq& entries,
+    const std::string& from_relay, const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+  void cleanup_local_async_disc_cache(const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+  void cleanup_remote_async_disc_cache(const OpenDDS::DCPS::MonotonicTimePoint& now);
+
   const Config& config_;
+  OpenDDS::DCPS::ReactorTask_rch reactor_task_;
   const std::string address_;
+  GuidAddrSet& guid_addr_set_;
   RelayStatisticsReporter& relay_stats_reporter_;
   RelayPartitionsDataWriter_var relay_partitions_writer_;
+  AsyncDiscoveryCacheUpdateDataWriter_var async_disc_cache_update_writer_;
+  AsyncDiscoveryCachePruneDataWriter_var async_disc_cache_prune_writer_;
 
   using Slots = std::vector<StringSet>;
   Slots slots_;
@@ -185,8 +227,59 @@ private:
   PartitionToGuid partition_to_guid_;
   PartitionIndex<GuidSet, GuidToParticipantGuid> partition_index_;
 
+  DeniedPartitions denied_partitions_;
+
+  using GuidPartitionTableEvent = OpenDDS::DCPS::PmfNowEvent<GuidPartitionTable>;
+  OpenDDS::DCPS::SporadicEvent_rch denied_partitions_cleanup_task_;
+  bool pending_denied_partitions_cleanup_ = false;
+
   mutable ACE_Thread_Mutex mutex_;
   mutable ACE_Thread_Mutex write_mutex_;
+  mutable ACE_Thread_Mutex denied_partitions_mutex_;
+
+  class AsyncDiscoveryCache {
+  public:
+    bool lookup(StringSet& partitions, const std::string& key);
+
+    std::pair<size_t, size_t> update(const std::string& key, const StringSet& partitions,
+      const OpenDDS::DCPS::MonotonicTimePoint& now, StringSet* prev_partitions);
+
+    std::pair<size_t, size_t> update(const AsyncDiscoveryCacheEntrySeq& entries, const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+    bool remove(const std::string& key);
+
+    std::pair<size_t, size_t> remove(const AsyncDiscoveryCacheEntrySeq& entries, StringSet& removed_keys);
+
+    std::pair<size_t, size_t> remove(const StringSequence& keys, StringSet& removed_keys);
+
+    std::pair<size_t, size_t> remove_expired(const OpenDDS::DCPS::MonotonicTimePoint& now, const OpenDDS::DCPS::TimeDuration& timeout,
+                                             StringSet& expired_keys, bool record_expired_keys);
+
+    const OpenDDS::DCPS::MonotonicTimePoint earliest_last_access() const;
+
+  private:
+    void update_i(const std::string& key, const StringSet& partitions,
+                  const OpenDDS::DCPS::MonotonicTimePoint& now, StringSet* prev_partitions);
+
+    bool remove_i(const std::string& key);
+
+    void remove_from_expiration_map(const OpenDDS::DCPS::MonotonicTimePoint& last_access, const std::string& key);
+
+    using CertToPartitions = std::unordered_map<std::string, std::pair<StringSet, OpenDDS::DCPS::MonotonicTimePoint>>;
+    using PartitionCacheExpirationMap = std::map<OpenDDS::DCPS::MonotonicTimePoint, StringSet>;
+
+    CertToPartitions cert_to_partitions_;
+    PartitionCacheExpirationMap expiration_map_;
+    mutable ACE_Thread_Mutex mutex_;
+  };
+
+  // Async discovery cache for partitions of local participants.
+  AsyncDiscoveryCache local_async_disc_cache_;
+  OpenDDS::DCPS::SporadicEvent_rch local_async_disc_cache_cleanup_task_;
+
+  // Async discovery cache for partitions of remote participants (i.e., from peer relay instances).
+  AsyncDiscoveryCache remote_async_disc_cache_;
+  OpenDDS::DCPS::SporadicEvent_rch remote_async_disc_cache_cleanup_task_;
 };
 
 }

@@ -140,23 +140,20 @@ FilterEvaluator::SerializedForEval::lookup(const char* field) const
   Message_Block_Ptr mb(serialized_->duplicate());
   Serializer ser(mb.get(), encoding_);
   if (encoding_.is_encapsulated()) {
-    EncapsulationHeader encap;
-    if (!(ser >> encap)) {
+    const EncapsulationReadStatus::Value read_status = read_encapsulation_header(ser, exten_);
+    if (read_status == EncapsulationReadStatus::HeaderError) {
       ACE_ERROR((LM_ERROR, ACE_TEXT("(%P|%t) ERROR ")
         ACE_TEXT("FilterEvaluator::SerializedForEval::lookup: ")
         ACE_TEXT("deserialization of encapsulation header failed.\n")));
       throw std::runtime_error("FilterEvaluator::SerializedForEval::lookup:"
         "deserialization of encapsulation header failed.\n");
-    }
-    Encoding encoding;
-    if (!to_encoding(encoding, encap, exten_)) {
+    } else if (read_status == EncapsulationReadStatus::ExtensibilityMismatch) {
       ACE_ERROR((LM_ERROR, ACE_TEXT("(%P|%t) ERROR ")
         ACE_TEXT("FilterEvaluator::SerializedForEval::lookup: ")
         ACE_TEXT("failed to convert encapsulation header to encoding.\n")));
       throw std::runtime_error("FilterEvaluator::SerializedForEval::lookup:"
         "failed to convert encapsulation header to encoding.\n");
     }
-    ser.encoding(encoding);
   }
   const Value v = meta_.getValue(ser, field, &type_support_);
   cache_.insert(std::make_pair(OPENDDS_STRING(field), v));
@@ -418,10 +415,8 @@ namespace {
           Value right = children_[1]->eval(data);
           return left % right;
         }
-        break;
       }
-      OPENDDS_ASSERT(0);
-      return Value(0);
+      throw std::runtime_error("Unknown function operator");
     }
 
   private:
@@ -447,7 +442,7 @@ namespace {
       } else if (op->TypeMatches<OR>()) {
         op_ = LG_OR;
       } else {
-        OPENDDS_ASSERT(0);
+        throw std::runtime_error("Unknown logical operator");
       }
     }
 
@@ -521,8 +516,7 @@ FilterEvaluator::walkAst(const FilterEvaluator::AstNodeWrapper& node)
     }
   }
 
-  OPENDDS_ASSERT(0);
-  return 0;
+  throw std::runtime_error("Unexpected filter AST node");
 }
 
 FilterEvaluator::Operand*
@@ -557,8 +551,7 @@ FilterEvaluator::walkOperand(const FilterEvaluator::AstNodeWrapper& node)
       return call;
     }
   }
-  OPENDDS_ASSERT(0);
-  return 0;
+  throw std::runtime_error("Unexpected filter operand node");
 }
 
 bool
@@ -579,9 +572,19 @@ FilterEvaluator::hasFilter() const
   return filter_root_ != 0;
 }
 
+#ifdef _MSC_VER
+#pragma warning(push)
+// MSVC 2022 reports C4702 here in optimized unity builds.
+#pragma warning(disable : 4702)
+#endif
+
 Value::Value(bool b, bool conversion_preferred)
   : type_(VAL_BOOL), b_(b), conversion_preferred_(conversion_preferred)
 {}
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 Value::Value(int i, bool conversion_preferred)
   : type_(VAL_INT), i_(i), conversion_preferred_(conversion_preferred)

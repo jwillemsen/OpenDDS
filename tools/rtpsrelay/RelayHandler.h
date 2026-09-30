@@ -5,7 +5,6 @@
 #include "GuidAddrSet.h"
 #include "GuidPartitionTable.h"
 #include "HandlerStatisticsReporter.h"
-#include "ParticipantStatisticsReporter.h"
 #include "RelayPartitionTable.h"
 #include "RelayStatisticsReporter.h"
 
@@ -100,7 +99,7 @@ public:
                   Port port,
                   const ACE_INET_Addr& horizontal_address,
                   ACE_Reactor* reactor,
-                  const GuidPartitionTable& guid_partition_table,
+                  GuidPartitionTable& guid_partition_table,
                   const RelayPartitionTable& relay_partition_table,
                   GuidAddrSet& guid_addr_set,
                   const OpenDDS::RTPS::RtpsDiscovery_rch& rtps_discovery,
@@ -118,7 +117,6 @@ public:
   GuidAddrSet& guid_addr_set() { return guid_addr_set_; }
 
   void venqueue_message(const ACE_INET_Addr& addr,
-                        ParticipantStatisticsReporter& stats_reporter,
                         const OpenDDS::DCPS::Lockable_Message_Block_Ptr& msg,
                         const OpenDDS::DCPS::MonotonicTimePoint& now,
                         MessageType type);
@@ -145,31 +143,26 @@ protected:
                                const OpenDDS::DCPS::Lockable_Message_Block_Ptr& msg,
                                MessageType& type) override;
 
-  ParticipantStatisticsReporter& record_activity(GuidAddrSet::Proxy& proxy,
-                                                 const AddrPort& remote_address,
-                                                 const OpenDDS::DCPS::MonotonicTimePoint& now,
-                                                 const OpenDDS::DCPS::GUID_t& src_guid,
-                                                 MessageType msg_type,
-                                                 const size_t& msg_len,
-                                                 bool from_application_participant,
-                                                 bool* allow_stun_responses = 0);
+  bool record_activity(GuidAddrSet::Proxy& proxy,
+                       const AddrPort& remote_address,
+                       const OpenDDS::DCPS::MonotonicTimePoint& now,
+                       const OpenDDS::DCPS::GUID_t& src_guid,
+                       bool from_application_participant,
+                       bool& already_checked_admit,
+                       bool* allow_stun_responses = 0);
 
-  CORBA::ULong send(GuidAddrSet::Proxy& proxy,
-                    const OpenDDS::DCPS::GUID_t& src_guid,
+  using LocalClientAddresses = std::unordered_map<ACE_INET_Addr, std::unordered_set<u_short>, InetAddrHash>;
+
+  CORBA::ULong send(const AddressSet& horizontal_addrs,
+                    const LocalClientAddresses& local_clients,
                     const StringSet& to_partitions,
                     const GuidSet& to_guids,
                     bool send_to_application_participant,
                     const OpenDDS::DCPS::Lockable_Message_Block_Ptr& msg,
-                    const OpenDDS::DCPS::MonotonicTimePoint& now);
+                    const OpenDDS::DCPS::MonotonicTimePoint& now,
+                    bool async_discovery = false);
 
-  size_t send(const ACE_INET_Addr& addr,
-              OpenDDS::STUN::Message message,
-              const OpenDDS::DCPS::MonotonicTimePoint& now);
-
-  void populate_address_set(AddressSet& address_set,
-                            const StringSet& to_partitions);
-
-  const GuidPartitionTable& guid_partition_table_;
+  GuidPartitionTable& guid_partition_table_;
   const RelayPartitionTable& relay_partition_table_;
   GuidAddrSet& guid_addr_set_;
   HorizontalHandler* horizontal_handler_;
@@ -185,6 +178,22 @@ private:
                      GuidSet& to,
                      bool check_submessages,
                      const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+  void prepare_send(GuidAddrSet::Proxy& proxy,
+                    const OpenDDS::DCPS::GUID_t& src_guid,
+                    const StringSet& to_partitions,
+                    const GuidSet& to_guids,
+                    const OpenDDS::DCPS::MonotonicTimePoint& now,
+                    bool async_discovery,
+                    AddressSet& horizontal_addrs,
+                    LocalClientAddresses& local_clients);
+
+  size_t send(const ACE_INET_Addr& addr,
+              OpenDDS::STUN::Message message,
+              const OpenDDS::DCPS::MonotonicTimePoint& now);
+
+  void populate_address_set(AddressSet& address_set,
+                            const StringSet& to_partitions);
 
   OpenDDS::RTPS::RtpsDiscovery_rch rtps_discovery_;
   const DDS::Security::CryptoTransform_var crypto_;
@@ -207,7 +216,8 @@ public:
                                const StringSet& to_partitions,
                                const GuidSet& to_guids,
                                const OpenDDS::DCPS::Lockable_Message_Block_Ptr& msg,
-                               const OpenDDS::DCPS::MonotonicTimePoint& now);
+                               const OpenDDS::DCPS::MonotonicTimePoint& now,
+                               bool async_discovery);
 
 private:
   const GuidPartitionTable& guid_partition_table_;
@@ -224,7 +234,7 @@ public:
               const std::string& name,
               const ACE_INET_Addr& address,
               ACE_Reactor* reactor,
-              const GuidPartitionTable& guid_partition_table,
+              GuidPartitionTable& guid_partition_table,
               const RelayPartitionTable& relay_partition_table,
               GuidAddrSet& guid_addr_set,
               const OpenDDS::RTPS::RtpsDiscovery_rch& rtps_discovery,
@@ -261,7 +271,7 @@ public:
               const std::string& name,
               const ACE_INET_Addr& horizontal_address,
               ACE_Reactor* reactor,
-              const GuidPartitionTable& guid_partition_table,
+              GuidPartitionTable& guid_partition_table,
               const RelayPartitionTable& relay_partition_table,
               GuidAddrSet& guid_addr_set,
               const OpenDDS::RTPS::RtpsDiscovery_rch& rtps_discovery,
@@ -287,7 +297,7 @@ public:
               const std::string& name,
               const ACE_INET_Addr& horizontal_address,
               ACE_Reactor* reactor,
-              const GuidPartitionTable& guid_partition_table,
+              GuidPartitionTable& guid_partition_table,
               const RelayPartitionTable& relay_partition_table,
               GuidAddrSet& guid_addr_set,
               const OpenDDS::RTPS::RtpsDiscovery_rch& rtps_discovery,

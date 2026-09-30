@@ -116,17 +116,9 @@ DomainParticipantImpl::DomainParticipantImpl(
   , participant_handles_(handle_generator)
   , pub_id_gen_(dp_id_)
   , automatic_liveliness_timer_(make_rch<AutomaticLivelinessTimer>(ref(*this)))
-  , automatic_liveliness_task_(make_rch<AutomaticLivelinessTask>(
-    TheServiceParticipant->time_source(),
-    TheServiceParticipant->reactor_task(),
-    automatic_liveliness_timer_,
-    &LivelinessTimer::execute))
+  , automatic_liveliness_task_(make_rch<SporadicEvent>(TheServiceParticipant->event_dispatcher(), make_rch<AutomaticLivelinessTimerEvent>(automatic_liveliness_timer_, &LivelinessTimer::execute)))
   , participant_liveliness_timer_(make_rch<ParticipantLivelinessTimer>(ref(*this)))
-  , participant_liveliness_task_(make_rch<ParticipantLivelinessTask>(
-    TheServiceParticipant->time_source(),
-    TheServiceParticipant->reactor_task(),
-    participant_liveliness_timer_,
-    &LivelinessTimer::execute))
+  , participant_liveliness_task_(make_rch<SporadicEvent>(TheServiceParticipant->event_dispatcher(), make_rch<ParticipantLivelinessTimerEvent>( participant_liveliness_timer_, &LivelinessTimer::execute)))
 {
   (void) this->set_listener(a_listener, mask);
   monitor_.reset(TheServiceParticipant->monitor_factory_->create_dp_monitor(this));
@@ -385,12 +377,14 @@ DomainParticipantImpl::delete_subscriber(
 DDS::Subscriber_ptr
 DomainParticipantImpl::get_builtin_subscriber()
 {
+  ACE_GUARD_RETURN(ACE_Recursive_Thread_Mutex, g, subscribers_protector_, DDS::Subscriber_ptr());
   return bit_subscriber_->get();
 }
 
 RcHandle<BitSubscriber>
 DomainParticipantImpl::get_builtin_subscriber_proxy()
 {
+  ACE_GUARD_RETURN(ACE_Recursive_Thread_Mutex, g, subscribers_protector_, RcHandle<BitSubscriber>());
   return bit_subscriber_;
 }
 
@@ -972,6 +966,18 @@ DDS::ReturnCode_t DomainParticipantImpl::delete_multitopic(
   ACE_GUARD_RETURN(ACE_Recursive_Thread_Mutex, guard, topics_protector_,
                    DDS::RETCODE_OUT_OF_RESOURCES);
   DDS::MultiTopic_var mt = DDS::MultiTopic::_duplicate(a_multitopic);
+  DDS::DomainParticipant_var dp = mt->get_participant();
+  const DomainParticipantImpl* const dp_servant =
+    dynamic_cast<const DomainParticipantImpl*>(dp.in());
+  if (dp_servant != this) {
+    if (DCPS_debug_level > 3) {
+      ACE_ERROR((LM_ERROR, ACE_TEXT("(%P|%t) ERROR: ")
+                 ACE_TEXT("DomainParticipantImpl::delete_multitopic, ")
+                 ACE_TEXT("can't delete a multitopic because it belongs to ")
+                 ACE_TEXT("a different participant.\n")));
+    }
+    return DDS::RETCODE_PRECONDITION_NOT_MET;
+  }
   CORBA::String_var mt_name = mt->get_name();
   TopicDescriptionMap::iterator iter = topic_descrs_.find(mt_name.in());
   if (iter == topic_descrs_.end()) {
@@ -1081,7 +1087,10 @@ DomainParticipantImpl::delete_contained_entities()
     handler->wait();
   }
 
-  bit_subscriber_.reset();
+  {
+    ACE_GUARD_RETURN(ACE_Recursive_Thread_Mutex, g, subscribers_protector_, DDS::RETCODE_ERROR);
+    bit_subscriber_.reset();
+  }
 
   Registered_Data_Types->unregister_participant(this);
 
@@ -2327,6 +2336,11 @@ DomainParticipantImpl::LivelinessTimer::~LivelinessTimer()
 void
 DomainParticipantImpl::LivelinessTimer::add_adjust(OpenDDS::DCPS::DataWriterImpl* writer)
 {
+  const TimeDuration writer_interval = writer->liveliness_check_interval(kind_);
+  if (writer_interval.is_max()) {
+    return;
+  }
+
   ACE_GUARD(ACE_Thread_Mutex, guard, lock_);
 
   const MonotonicTimePoint now = MonotonicTimePoint::now();
@@ -2335,7 +2349,7 @@ DomainParticipantImpl::LivelinessTimer::add_adjust(OpenDDS::DCPS::DataWriterImpl
   const TimeDuration remaining = interval_ - (now - last_liveliness_check_);
 
   // Adopt a smaller interval.
-  interval_ = std::min(interval_, writer->liveliness_check_interval(kind_));
+  interval_ = std::min(interval_, writer_interval);
 
   // Reschedule or schedule a timer if necessary.
   if (scheduled_ && interval_ < remaining) {

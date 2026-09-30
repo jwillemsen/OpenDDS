@@ -45,12 +45,15 @@ project(OpenDDS_Dcps): core, coverage_optional, \
     DCPS/transport/framework
     DCPS/security/framework
     DCPS/XTypes
+    ^ DCPS/XTypes/XmlTypeProvider.cpp
   }
 
   Header_Files {
     OpenDDSConfig.h
     OpenDDSConfigWrapper.h
     OpenDDSConfigWrapperC.h
+    OpenDDSConfigWrapperJC.h
+    OpenDDSConfigWrapperS.h
     Version.h
     Versioned_Namespace.h
     DCPS
@@ -58,9 +61,11 @@ project(OpenDDS_Dcps): core, coverage_optional, \
     DCPS/security/framework
     DCPS/yard
     DCPS/XTypes
+    ^ DCPS/XTypes/XmlTypeProvider.h
+    ^ DCPS/XTypes/XmlTypeProvider_export.h
 
     // Although these files only contain comments since
-    // service-side suppression is done,
+    // server-side suppression is done,
     // they are included here so that "make install" will
     // work.
     DdsDcpsS.h

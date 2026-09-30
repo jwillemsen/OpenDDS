@@ -12,6 +12,7 @@
 #include "rtps_export.h"
 
 #include <dds/DCPS/AtomicBool.h>
+#include <dds/DCPS/PeriodicEvent.h>
 #include <dds/DCPS/PoolAllocator.h>
 #include <dds/DCPS/Statistics.h>
 #include <dds/DCPS/debug.h>
@@ -55,7 +56,9 @@ const char RTPS_HARVEST_THREAD_STATUS[] = "OpenDDS.Rtps.HarvestThreadStatus";
  * discovery.
  *
  */
-class OpenDDS_Rtps_Export RtpsDiscovery : public DCPS::Discovery {
+class OpenDDS_Rtps_Export RtpsDiscovery
+  : public virtual DCPS::Discovery
+  , public virtual DCPS::ConfigListener {
 public:
   explicit RtpsDiscovery(const RepoKey& key);
   ~RtpsDiscovery();
@@ -178,6 +181,9 @@ public:
   bool use_xtypes() const { return config_->use_xtypes(); }
   void use_xtypes(RtpsDiscoveryConfig::UseXTypes val) { return config_->use_xtypes(val); }
   bool use_xtypes_complete() const { return config_->use_xtypes_complete(); }
+
+  bool use_rtps_duration_fraction() const { return config_->use_rtps_duration_fraction(); }
+  void use_rtps_duration_fraction(bool value) { config_->use_rtps_duration_fraction(value); }
 
   RtpsDiscoveryConfig_rch config() const { return config_; }
 
@@ -343,7 +349,7 @@ private:
 
   const RepoKey key_;
 
-  // This mutex protects everything else
+  // This mutex protects everything else, except stats data members
   mutable ACE_Thread_Mutex lock_;
 
   RtpsDiscoveryConfig_rch config_;
@@ -358,10 +364,17 @@ private:
                      const DDS::DataReaderQos& qos);
 
   DCPS::StatisticsDataWriter_rch stats_writer_;
-  typedef DCPS::PmfPeriodicTask<const RtpsDiscovery> PeriodicTask;
-  DCPS::RcHandle<PeriodicTask> stats_task_;
+  typedef DCPS::PmfEvent<RtpsDiscovery> RtpsDiscoveryEvent;
+  DCPS::PeriodicEvent_rch stats_event_;
+  DCPS::TimeDuration stats_event_period_;
+  // Seperate mutex to reduce contention on lock_
+  mutable ACE_Thread_Mutex stats_lock_;
 
-  void write_stats(const MonotonicTimePoint&) const;
+  void setup_stats_event(const DCPS::TimeDuration& period);
+  void write_stats();
+
+  DCPS::ConfigReader_rch config_reader_;
+  void on_data_available(DCPS::ConfigReader_rch reader);
 
 public:
   class Config : public Discovery::Config {

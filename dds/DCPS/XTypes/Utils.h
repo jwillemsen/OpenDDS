@@ -33,6 +33,7 @@ OpenDDS_Dcps_Export DDS::ReturnCode_t extensibility(
 OpenDDS_Dcps_Export DDS::ReturnCode_t max_extensibility(
   DDS::DynamicType_ptr type, DCPS::Extensibility& ext);
 OpenDDS_Dcps_Export DCPS::Extensibility dds_to_opendds_ext(DDS::ExtensibilityKind ext);
+OpenDDS_Dcps_Export void canonicalize_float128_padding(ACE_CDR::LongDouble& value);
 
 /**
  * Iterate over parts of a member name path that can be the name of a
@@ -167,6 +168,9 @@ OpenDDS_Dcps_Export DDS::ReturnCode_t set_int_value(
   DDS::DynamicData_ptr dest, DDS::MemberId id, DDS::TypeKind kind, DDS::Int64 value);
 
 OpenDDS_Dcps_Export DDS::UInt32 bound_total(DDS::TypeDescriptor_var descriptor);
+
+OpenDDS_Dcps_Export bool dynamic_data_equal(
+  DDS::DynamicData_ptr lhs, DDS::DynamicData_ptr rhs);
 
 OpenDDS_Dcps_Export DDS::ReturnCode_t bitmask_bound(
   DDS::DynamicType_ptr type, DDS::TypeKind& bound_kind);

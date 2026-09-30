@@ -51,6 +51,31 @@ namespace {
 
 const OpenDDS::DCPS::MonotonicTime_t MTZERO = { 0, 0 };
 
+bool has_complete_equivalence(const OpenDDS::XTypes::TypeIdentifier& ti)
+{
+  using namespace OpenDDS::XTypes;
+  switch (ti.kind()) {
+  case EK_COMPLETE:
+    return true;
+  case TI_STRONGLY_CONNECTED_COMPONENT:
+    return ti.sc_component_id().sc_component_id.kind == EK_COMPLETE;
+  case TI_PLAIN_SEQUENCE_SMALL:
+    return ti.seq_sdefn().header.equiv_kind == EK_COMPLETE;
+  case TI_PLAIN_SEQUENCE_LARGE:
+    return ti.seq_ldefn().header.equiv_kind == EK_COMPLETE;
+  case TI_PLAIN_ARRAY_SMALL:
+    return ti.array_sdefn().header.equiv_kind == EK_COMPLETE;
+  case TI_PLAIN_ARRAY_LARGE:
+    return ti.array_ldefn().header.equiv_kind == EK_COMPLETE;
+  case TI_PLAIN_MAP_SMALL:
+    return ti.map_sdefn().header.equiv_kind == EK_COMPLETE;
+  case TI_PLAIN_MAP_LARGE:
+    return ti.map_ldefn().header.equiv_kind == EK_COMPLETE;
+  default:
+    return false;
+  }
+}
+
 bool checkAndAssignQos(DDS::PublicationBuiltinTopicData& dest,
                        const DDS::PublicationBuiltinTopicData& src)
 {
@@ -282,6 +307,13 @@ using DCPS::NetworkAddress;
 namespace {
   const Encoding sedp_encoding(Encoding::KIND_XCDR1, DCPS::ENDIAN_LITTLE);
   const Encoding type_lookup_encoding(Encoding::KIND_XCDR2, DCPS::ENDIAN_NATIVE);
+
+  ParameterListConverter::RtpsDurationEncoding duration_encoding(bool use_fraction)
+  {
+    return use_fraction
+      ? ParameterListConverter::RDE_FRACTIONAL_SECONDS
+      : ParameterListConverter::RDE_NANOSECONDS;
+  }
 }
 
 RtpsDiscoveryCore::RtpsDiscoveryCore(RcHandle<RtpsDiscoveryConfig> config,
@@ -306,6 +338,7 @@ Sedp::Sedp(const GUID_t& participant_id, Spdp& owner, ACE_Thread_Mutex& lock)
   , lock_(lock)
   , participant_id_(participant_id)
   , participant_flags_(owner.config()->participant_flags())
+  , local_duration_encoding_(duration_encoding((participant_flags_ & PFLAGS_RTPS_DURATION_FRACTION) != 0))
   , publication_counter_(0)
   , subscription_counter_(0)
   , topic_counter_(0)
@@ -439,6 +472,8 @@ Sedp::init(const GUID_t& guid,
                            disco.config()->recv_buffer_size());
   transport_inst_->receive_preallocated_message_blocks(disco.config()->sedp_receive_preallocated_message_blocks());
   transport_inst_->receive_preallocated_data_blocks(disco.config()->sedp_receive_preallocated_data_blocks());
+  config_store_->set(transport_inst_->config_key("ADDRESS_FAMILY").c_str(),
+                     DCPS::address_family_name(disco.config()->address_family()));
 
   set_port_mode(transport_inst_->config_key("PORT_MODE").c_str(), disco.config()->sedp_port_mode());
   config_store_->set_int32(transport_inst_->config_key("PB").c_str(), disco.config()->pb());
@@ -454,6 +489,12 @@ Sedp::init(const GUID_t& guid,
                        disco.config()->sedp_multicast_address(domainId),
                        ConfigStoreImpl::Format_Optional_Port,
                        ConfigStoreImpl::Kind_IPV4);
+#ifdef ACE_HAS_IPV6
+    config_store_->set(transport_inst_->config_key("IPV6_MULTICAST_GROUP_ADDRESS").c_str(),
+                       disco.config()->ipv6_sedp_multicast_address(domainId),
+                       ConfigStoreImpl::Format_Optional_Port,
+                       ConfigStoreImpl::Kind_IPV6);
+#endif
 
     config_store_->set_uint32(transport_inst_->config_key("TTL").c_str(), disco.ttl());
     config_store_->set(transport_inst_->config_key("MULTICAST_INTERFACE").c_str(), disco.multicast_interface());
@@ -489,13 +530,13 @@ Sedp::init(const GUID_t& guid,
   config_store_->set(transport_inst_->config_key("DATA_RTPS_RELAY_ADDRESS").c_str(),
                      disco.config()->sedp_rtps_relay_address(),
                      ConfigStoreImpl::Format_Required_Port,
-                     ConfigStoreImpl::Kind_IPV4);
+                     ConfigStoreImpl::Kind_ANY);
   config_store_->set_boolean(transport_inst_->config_key("USE_RTPS_RELAY").c_str(), disco.config()->use_rtps_relay());
   config_store_->set_boolean(transport_inst_->config_key("RTPS_RELAY_ONLY").c_str(), disco.config()->rtps_relay_only());
   config_store_->set(transport_inst_->config_key("DATA_STUN_SERVER_ADDRESS").c_str(),
                      disco.config()->sedp_stun_server_address(),
                      ConfigStoreImpl::Format_Required_Port,
-                     ConfigStoreImpl::Kind_IPV4);
+                     ConfigStoreImpl::Kind_ANY);
 #if OPENDDS_CONFIG_SECURITY
   config_store_->set_boolean(transport_inst_->config_key("USE_ICE").c_str(), disco.config()->use_ice());
 #endif
@@ -516,7 +557,7 @@ Sedp::init(const GUID_t& guid,
   const_cast<bool&>(use_xtypes_) = disco.use_xtypes();
   const_cast<bool&>(use_xtypes_complete_) = disco.use_xtypes_complete();
 
-  reactor_task_ = transport_inst_->reactor_task(domainId, 0);
+  reactor_task_ = transport_inst_->reactor_task(domainId, guid);
   if (!reactor_task_) {
     if (log_level >= LogLevel::Error) {
       ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: Sedp::init: SEDP transport initialization failed\n"));
@@ -526,10 +567,9 @@ Sedp::init(const GUID_t& guid,
   // One should assume that the transport is configured after this
   // point.  Changes to transport_inst_ or rtps_inst after this line
   // may not be reflected.
-  ACE_Reactor* reactor = reactor_task_->get_reactor();
-  job_queue_ = DCPS::make_rch<DCPS::JobQueue>(reactor);
-  event_dispatcher_ = transport_inst_->event_dispatcher(domainId, 0);
-  type_lookup_init(reactor_task_);
+  event_dispatcher_ = transport_inst_->event_dispatcher(domainId, guid);
+  job_queue_ = DCPS::make_rch<DCPS::JobQueue>(event_dispatcher_);
+  type_lookup_init();
 
   // Configure and enable each reader/writer
   const bool reliable = true;
@@ -547,91 +587,91 @@ Sedp::init(const GUID_t& guid,
 #endif
 
   if (bep & DISC_BUILTIN_ENDPOINT_PUBLICATION_ANNOUNCER) {
-    publications_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+    publications_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
   }
-  publications_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+  publications_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
 
 #if OPENDDS_CONFIG_SECURITY
   publications_secure_writer_->set_crypto_handles(spdp_.crypto_handle());
   publications_secure_reader_->set_crypto_handles(spdp_.crypto_handle());
   if (bep & DDS::Security::SEDP_BUILTIN_PUBLICATIONS_SECURE_WRITER) {
-    publications_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+    publications_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
   }
-  publications_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+  publications_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
 #endif
 
   if (bep & DISC_BUILTIN_ENDPOINT_SUBSCRIPTION_ANNOUNCER) {
-    subscriptions_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+    subscriptions_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
   }
-  subscriptions_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+  subscriptions_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
 
 #if OPENDDS_CONFIG_SECURITY
   subscriptions_secure_writer_->set_crypto_handles(spdp_.crypto_handle());
   subscriptions_secure_reader_->set_crypto_handles(spdp_.crypto_handle());
   if (bep & DDS::Security::SEDP_BUILTIN_SUBSCRIPTIONS_SECURE_WRITER) {
-    subscriptions_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+    subscriptions_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
   }
-  subscriptions_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+  subscriptions_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
 #endif
 
   if (bep & BUILTIN_ENDPOINT_PARTICIPANT_MESSAGE_DATA_WRITER) {
-    participant_message_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+    participant_message_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
   }
-  participant_message_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+  participant_message_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
 
 #if OPENDDS_CONFIG_SECURITY
   participant_message_secure_writer_->set_crypto_handles(spdp_.crypto_handle());
   participant_message_secure_reader_->set_crypto_handles(spdp_.crypto_handle());
   if (bep & DDS::Security::BUILTIN_PARTICIPANT_MESSAGE_SECURE_WRITER) {
-    participant_message_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+    participant_message_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
   }
-  participant_message_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+  participant_message_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
 
-  participant_stateless_message_writer_->enable_transport_using_config(besteffort, nondurable, transport_cfg_, 0);
-  participant_stateless_message_reader_->enable_transport_using_config(besteffort, nondurable, transport_cfg_, 0);
+  participant_stateless_message_writer_->enable_transport_using_config(besteffort, nondurable, transport_cfg_, guid);
+  participant_stateless_message_reader_->enable_transport_using_config(besteffort, nondurable, transport_cfg_, guid);
 
   participant_volatile_message_secure_writer_->set_crypto_handles(spdp_.crypto_handle());
   participant_volatile_message_secure_reader_->set_crypto_handles(spdp_.crypto_handle());
-  participant_volatile_message_secure_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
-  participant_volatile_message_secure_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+  participant_volatile_message_secure_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
+  participant_volatile_message_secure_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
 
   dcps_participant_secure_writer_->set_crypto_handles(spdp_.crypto_handle());
   dcps_participant_secure_reader_->set_crypto_handles(spdp_.crypto_handle());
-  dcps_participant_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
-  dcps_participant_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, 0);
+  dcps_participant_secure_writer_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
+  dcps_participant_secure_reader_->enable_transport_using_config(reliable, durable, transport_cfg_, guid);
 #endif
 
   if (bep & BUILTIN_ENDPOINT_TYPE_LOOKUP_REQUEST_DATA_WRITER) {
-    type_lookup_request_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_request_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
   if (bep & BUILTIN_ENDPOINT_TYPE_LOOKUP_REQUEST_DATA_READER) {
-    type_lookup_request_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_request_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
 
   if (bep & BUILTIN_ENDPOINT_TYPE_LOOKUP_REPLY_DATA_WRITER) {
-    type_lookup_reply_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_reply_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
   if (bep & BUILTIN_ENDPOINT_TYPE_LOOKUP_REPLY_DATA_READER) {
-    type_lookup_reply_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_reply_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
 
 #if OPENDDS_CONFIG_SECURITY
   if (xbep & DDS::Security::TYPE_LOOKUP_SERVICE_REQUEST_SECURE_WRITER) {
     type_lookup_request_secure_writer_->set_crypto_handles(spdp_.crypto_handle());
-    type_lookup_request_secure_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_request_secure_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
   if (xbep & DDS::Security::TYPE_LOOKUP_SERVICE_REQUEST_SECURE_READER) {
     type_lookup_request_secure_reader_->set_crypto_handles(spdp_.crypto_handle());
-    type_lookup_request_secure_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_request_secure_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
 
   if (xbep & DDS::Security::TYPE_LOOKUP_SERVICE_REPLY_SECURE_WRITER) {
     type_lookup_reply_secure_writer_->set_crypto_handles(spdp_.crypto_handle());
-    type_lookup_reply_secure_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_reply_secure_writer_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
   if (xbep & DDS::Security::TYPE_LOOKUP_SERVICE_REPLY_SECURE_READER) {
     type_lookup_reply_secure_reader_->set_crypto_handles(spdp_.crypto_handle());
-    type_lookup_reply_secure_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, 0);
+    type_lookup_reply_secure_reader_->enable_transport_using_config(reliable, nondurable, transport_cfg_, guid);
   }
 #endif
 
@@ -947,7 +987,7 @@ DCPS::LocatorSeq
 Sedp::unicast_locators() const
 {
   DCPS::TransportLocator trans_info;
-  transport_inst_->populate_locator(trans_info, DCPS::CONNINFO_UNICAST, get_domain_id());
+  transport_inst_->populate_locator(trans_info, DCPS::CONNINFO_UNICAST, get_domain_id(), spdp_.guid());
   return transport_locator_to_locator_seq(trans_info);
 }
 
@@ -955,25 +995,21 @@ DCPS::LocatorSeq
 Sedp::multicast_locators() const
 {
   DCPS::TransportLocator trans_info;
-  transport_inst_->populate_locator(trans_info, DCPS::CONNINFO_MULTICAST, get_domain_id());
+  transport_inst_->populate_locator(trans_info, DCPS::CONNINFO_MULTICAST, get_domain_id(), spdp_.guid());
   return transport_locator_to_locator_seq(trans_info);
 }
 
 NetworkAddress
 Sedp::local_address() const
 {
-  DCPS::RtpsUdpInst_rch rtps_inst =
-    DCPS::static_rchandle_cast<DCPS::RtpsUdpInst>(transport_inst_);
-  return rtps_inst->actual_local_address_;
+  return transport_inst_->actual_local_address(get_domain_id(), spdp_.guid());
 }
 
 #ifdef ACE_HAS_IPV6
 NetworkAddress
 Sedp::ipv6_local_address() const
 {
-  DCPS::RtpsUdpInst_rch rtps_inst =
-    DCPS::static_rchandle_cast<DCPS::RtpsUdpInst>(transport_inst_);
-  return rtps_inst->ipv6_actual_local_address_;
+  return transport_inst_->ipv6_actual_local_address(get_domain_id(), spdp_.guid());
 }
 #endif
 
@@ -1723,101 +1759,101 @@ Sedp::update_locators(const ParticipantData_t& pdata)
 
   if (avail & DISC_BUILTIN_ENDPOINT_PARTICIPANT_ANNOUNCER) {
     remote_id.entityId = ENTITYID_SPDP_BUILTIN_PARTICIPANT_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DISC_BUILTIN_ENDPOINT_PARTICIPANT_DETECTOR) {
     remote_id.entityId = ENTITYID_SPDP_BUILTIN_PARTICIPANT_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DISC_BUILTIN_ENDPOINT_PUBLICATION_ANNOUNCER) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_PUBLICATIONS_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DISC_BUILTIN_ENDPOINT_PUBLICATION_DETECTOR) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_PUBLICATIONS_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DISC_BUILTIN_ENDPOINT_SUBSCRIPTION_ANNOUNCER) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DISC_BUILTIN_ENDPOINT_SUBSCRIPTION_DETECTOR) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & BUILTIN_ENDPOINT_PARTICIPANT_MESSAGE_DATA_WRITER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_MESSAGE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & BUILTIN_ENDPOINT_PARTICIPANT_MESSAGE_DATA_READER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_MESSAGE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & BUILTIN_ENDPOINT_TYPE_LOOKUP_REQUEST_DATA_WRITER) {
     remote_id.entityId = ENTITYID_TL_SVC_REQ_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & BUILTIN_ENDPOINT_TYPE_LOOKUP_REQUEST_DATA_READER) {
     remote_id.entityId = ENTITYID_TL_SVC_REQ_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & BUILTIN_ENDPOINT_TYPE_LOOKUP_REPLY_DATA_WRITER) {
     remote_id.entityId = ENTITYID_TL_SVC_REPLY_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & BUILTIN_ENDPOINT_TYPE_LOOKUP_REPLY_DATA_READER) {
     remote_id.entityId = ENTITYID_TL_SVC_REPLY_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
 
 #if OPENDDS_CONFIG_SECURITY
   if (avail & DDS::Security::SEDP_BUILTIN_PUBLICATIONS_SECURE_WRITER) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_PUBLICATIONS_SECURE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::SEDP_BUILTIN_PUBLICATIONS_SECURE_READER) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_PUBLICATIONS_SECURE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::SEDP_BUILTIN_SUBSCRIPTIONS_SECURE_WRITER) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_SECURE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::SEDP_BUILTIN_SUBSCRIPTIONS_SECURE_READER) {
     remote_id.entityId = ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_SECURE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::BUILTIN_PARTICIPANT_MESSAGE_SECURE_WRITER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_MESSAGE_SECURE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::BUILTIN_PARTICIPANT_MESSAGE_SECURE_READER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_MESSAGE_SECURE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::BUILTIN_PARTICIPANT_STATELESS_MESSAGE_WRITER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_STATELESS_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::BUILTIN_PARTICIPANT_STATELESS_MESSAGE_READER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_STATELESS_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::BUILTIN_PARTICIPANT_VOLATILE_MESSAGE_SECURE_WRITER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_VOLATILE_SECURE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::BUILTIN_PARTICIPANT_VOLATILE_MESSAGE_SECURE_READER) {
     remote_id.entityId = ENTITYID_P2P_BUILTIN_PARTICIPANT_VOLATILE_SECURE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::SPDP_BUILTIN_PARTICIPANT_SECURE_WRITER) {
     remote_id.entityId = ENTITYID_SPDP_RELIABLE_BUILTIN_PARTICIPANT_SECURE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (avail & DDS::Security::SPDP_BUILTIN_PARTICIPANT_SECURE_READER) {
     remote_id.entityId = ENTITYID_SPDP_RELIABLE_BUILTIN_PARTICIPANT_SECURE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
 
   const DDS::Security::ExtendedBuiltinEndpointSet_t& extended_avail =
@@ -1825,19 +1861,19 @@ Sedp::update_locators(const ParticipantData_t& pdata)
 
   if (extended_avail & DDS::Security::TYPE_LOOKUP_SERVICE_REQUEST_SECURE_WRITER) {
     remote_id.entityId = ENTITYID_TL_SVC_REQ_SECURE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (extended_avail & DDS::Security::TYPE_LOOKUP_SERVICE_REQUEST_SECURE_READER) {
     remote_id.entityId = ENTITYID_TL_SVC_REQ_SECURE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (extended_avail & DDS::Security::TYPE_LOOKUP_SERVICE_REPLY_SECURE_WRITER) {
     remote_id.entityId = ENTITYID_TL_SVC_REPLY_SECURE_WRITER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
   if (extended_avail & DDS::Security::TYPE_LOOKUP_SERVICE_REPLY_SECURE_READER) {
     remote_id.entityId = ENTITYID_TL_SVC_REPLY_SECURE_READER;
-    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), 0);
+    transport_inst_->update_locators(remote_id, remote_data, get_domain_id(), spdp_.guid());
   }
 #endif
 }
@@ -3213,7 +3249,7 @@ Sedp::signal_liveliness_secure(DDS::LivelinessQosPolicyKind kind)
 
 DCPS::WeakRcHandle<ICE::Endpoint> Sedp::get_ice_endpoint()
 {
-  return transport_inst_->get_ice_endpoint(get_domain_id(), 0);
+  return transport_inst_->get_ice_endpoint(get_domain_id(), spdp_.guid());
 }
 
 Sedp::Endpoint::~Endpoint()
@@ -3884,6 +3920,17 @@ bool Sedp::TypeLookupRequestReader::process_get_types_request(
     result.types);
   if (result.types.length() > 0) {
     result.complete_to_minimal.length(0);
+    for (CORBA::ULong i = 0; i != result.types.length(); ++i) {
+      const XTypes::TypeIdentifier& complete_ti = result.types[i].type_identifier;
+      XTypes::TypeIdentifier minimal_ti;
+      if (has_complete_equivalence(complete_ti) &&
+          sedp_.type_lookup_service_->get_minimal_type_identifier(complete_ti, minimal_ti)) {
+        const CORBA::ULong length = result.complete_to_minimal.length();
+        result.complete_to_minimal.length(length + 1);
+        result.complete_to_minimal[length] =
+          XTypes::TypeIdentifierPair(complete_ti, minimal_ti);
+      }
+    }
 
     XTypes::TypeLookup_getTypes_Result typeResult;
     typeResult.result(result);
@@ -4277,15 +4324,14 @@ Sedp::Reader::data_received(const DCPS::ReceivedDataSample& sample)
     Encoding encoding;
     DCPS::Message_Block_Ptr payload(sample.data(&mb_alloc_));
     Serializer ser(payload.get(), encoding);
-    DCPS::EncapsulationHeader encap;
-    if (!(ser >> encap)) {
+    const DCPS::EncapsulationReadStatus::Value read_status = read_encapsulation_header(ser, extensibility);
+    if (read_status == DCPS::EncapsulationReadStatus::HeaderError) {
       if (log_level >= LogLevel::Warning) {
         ACE_ERROR((LM_WARNING, "(%P|%t) WARNING: Sedp::Reader::data_received: "
                    "failed to deserialize encapsulation header\n"));
       }
       return;
-    }
-    if (!to_encoding(encoding, encap, extensibility)) {
+    } else if (read_status == DCPS::EncapsulationReadStatus::ExtensibilityMismatch) {
       if (log_level >= DCPS::LogLevel::Error) {
         ACE_ERROR((LM_ERROR,
                    "(%P|%t) ERROR: Sedp::Reader::data_received: "
@@ -4294,7 +4340,6 @@ Sedp::Reader::data_received(const DCPS::ReceivedDataSample& sample)
       }
       return;
     }
-    ser.encoding(encoding);
 
     data_received_i(sample, entity_id, ser, extensibility);
     break;
@@ -4385,6 +4430,12 @@ Sedp::DiscoveryReader::data_received_i(const DCPS::ReceivedDataSample& sample,
   DCPS::Extensibility extensibility)
 {
   const DCPS::MessageId id = static_cast<DCPS::MessageId>(sample.header_.message_id_);
+  VendorId_t remote_vendor_id;
+  bool remote_uses_rtps_duration_fraction = false;
+  sedp_.spdp_.get_vendor_id_and_duration_encoding(
+    sample.header_.publication_id_, remote_vendor_id, remote_uses_rtps_duration_fraction);
+  const ParameterListConverter::RtpsDurationEncoding remote_duration_encoding =
+    duration_encoding(remote_uses_rtps_duration_fraction);
 
   if (entity_id == ENTITYID_SEDP_BUILTIN_PUBLICATIONS_WRITER) {
     ParameterList data;
@@ -4397,7 +4448,10 @@ Sedp::DiscoveryReader::data_received_i(const DCPS::ReceivedDataSample& sample,
     }
 
     DiscoveredPublication wdata;
-    if (!ParameterListConverter::from_param_list(data, sedp_.spdp_.get_vendor_id(sample.header_.publication_id_), wdata.writer_data_, sedp_.use_xtypes_, wdata.type_info_)) {
+    if (!ParameterListConverter::from_param_list(
+          data, remote_vendor_id,
+          wdata.writer_data_, sedp_.use_xtypes_, wdata.type_info_,
+          remote_duration_encoding)) {
       if (log_level >= LogLevel::Warning) {
         ACE_ERROR((LM_WARNING, "(%P|%t) WARNING: Sedp::DiscoveryReader::data_received_i: "
                    "failed to convert from ParameterList to DiscoveredWriterData\n"));
@@ -4443,7 +4497,10 @@ Sedp::DiscoveryReader::data_received_i(const DCPS::ReceivedDataSample& sample,
 
     ParameterListConverter::DiscoveredPublication_SecurityWrapper wdata_secure = ParameterListConverter::DiscoveredPublication_SecurityWrapper();
 
-    if (!ParameterListConverter::from_param_list(data, sedp_.spdp_.get_vendor_id(sample.header_.publication_id_), wdata_secure, sedp_.use_xtypes_, wdata_secure.type_info)) {
+    if (!ParameterListConverter::from_param_list(
+          data, remote_vendor_id,
+          wdata_secure, sedp_.use_xtypes_, wdata_secure.type_info,
+          remote_duration_encoding)) {
       if (log_level >= LogLevel::Warning) {
         ACE_ERROR((LM_WARNING, "(%P|%t) WARNING: Sedp::DiscoveryReader::data_received_i: "
                    "failed to convert from ParameterList to DiscoveredPublication_SecurityWrapper\n"));
@@ -4486,7 +4543,10 @@ Sedp::DiscoveryReader::data_received_i(const DCPS::ReceivedDataSample& sample,
     }
 
     DiscoveredSubscription rdata;
-    if (!ParameterListConverter::from_param_list(data, sedp_.spdp_.get_vendor_id(sample.header_.publication_id_), rdata.reader_data_, sedp_.use_xtypes_, rdata.type_info_)) {
+    if (!ParameterListConverter::from_param_list(
+          data, remote_vendor_id,
+          rdata.reader_data_, sedp_.use_xtypes_, rdata.type_info_,
+          remote_duration_encoding)) {
       if (log_level >= LogLevel::Warning) {
         ACE_ERROR((LM_WARNING, "(%P|%t) WARNING: Sedp::DiscoveryReader::data_received_i: "
                    "failed to convert from ParameterList to DiscoveredReaderData\n"));
@@ -4534,7 +4594,10 @@ Sedp::DiscoveryReader::data_received_i(const DCPS::ReceivedDataSample& sample,
     }
 
     ParameterListConverter::DiscoveredSubscription_SecurityWrapper rdata_secure;
-    if (!ParameterListConverter::from_param_list(data, sedp_.spdp_.get_vendor_id(sample.header_.publication_id_), rdata_secure, sedp_.use_xtypes_, rdata_secure.type_info)) {
+    if (!ParameterListConverter::from_param_list(
+          data, remote_vendor_id,
+          rdata_secure, sedp_.use_xtypes_, rdata_secure.type_info,
+          remote_duration_encoding)) {
       if (log_level >= LogLevel::Warning) {
         ACE_ERROR((LM_WARNING, "(%P|%t) WARNING: Sedp::DiscoveryReader::data_received_i: "
                    "failed to convert from ParameterList to DiscoveredSubscription_SecurityWrapper\n"));
@@ -5034,12 +5097,14 @@ Sedp::write_publication_data_unsecure(UsedEndpoints& ue,
         return DDS::RETCODE_PRECONDITION_NOT_MET;
       }
       const DCPS::TypeInformation typeinfo(*lp.typeInfoFor(reader, &useFlexibleTypes));
-      if (!ParameterListConverter::to_param_list(dwd, plist, true, typeinfo)) {
+      if (!ParameterListConverter::to_param_list(
+            dwd, plist, true, typeinfo, local_duration_encoding_)) {
         ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: Sedp::write_publication_data_unsecure: "
                    "Failed to convert DiscoveredWriterData to ParameterList (Flags_FlexibleTypeSupport)\n"));
         result = DDS::RETCODE_ERROR;
       }
-    } else if (!ParameterListConverter::to_param_list(dwd, plist, use_xtypes_, lp.type_info_)) {
+    } else if (!ParameterListConverter::to_param_list(
+          dwd, plist, use_xtypes_, lp.type_info_, local_duration_encoding_)) {
       ACE_ERROR((LM_ERROR,
                  ACE_TEXT("(%P|%t) ERROR: Sedp::write_publication_data_unsecure: ")
                  ACE_TEXT("Failed to convert DiscoveredWriterData ")
@@ -5107,12 +5172,14 @@ Sedp::write_publication_data_secure(UsedEndpoints& ue,
         return DDS::RETCODE_PRECONDITION_NOT_MET;
       }
       const DCPS::TypeInformation typeinfo(*lp.typeInfoFor(reader, &useFlexibleTypes));
-      if (!ParameterListConverter::to_param_list(dwd, plist, true, typeinfo)) {
+      if (!ParameterListConverter::to_param_list(
+            dwd, plist, true, typeinfo, local_duration_encoding_)) {
         ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: Sedp::write_publication_data_secure: "
                              "Failed to convert DiscoveredWriterData to ParameterList (Flags_FlexibleTypeSupport)\n"));
         result = DDS::RETCODE_ERROR;
       }
-    } else if (!ParameterListConverter::to_param_list(dwd, plist, use_xtypes_, lp.type_info_)) {
+    } else if (!ParameterListConverter::to_param_list(
+          dwd, plist, use_xtypes_, lp.type_info_, local_duration_encoding_)) {
       ACE_ERROR((LM_ERROR,
                  ACE_TEXT("(%P|%t) ERROR: Sedp::write_publication_data_secure: ")
                  ACE_TEXT("Failed to convert DiscoveredWriterData ")
@@ -5222,12 +5289,14 @@ Sedp::write_subscription_data_unsecure(UsedEndpoints& ue,
         return DDS::RETCODE_PRECONDITION_NOT_MET;
       }
       const DCPS::TypeInformation typeinfo(*ls.typeInfoFor(reader, &useFlexibleTypes));
-      if (!ParameterListConverter::to_param_list(drd, plist, true, typeinfo)) {
+      if (!ParameterListConverter::to_param_list(
+            drd, plist, true, typeinfo, local_duration_encoding_)) {
         ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: Sedp::write_subscription_data_unsecure: "
                    "Failed to convert DiscoveredReaderData to ParameterList (Flags_FlexibleTypeSupport)\n"));
         result = DDS::RETCODE_ERROR;
       }
-    } else if (!ParameterListConverter::to_param_list(drd, plist, use_xtypes_, ls.type_info_)) {
+    } else if (!ParameterListConverter::to_param_list(
+          drd, plist, use_xtypes_, ls.type_info_, local_duration_encoding_)) {
       ACE_ERROR((LM_ERROR,
                  ACE_TEXT("(%P|%t) ERROR: Sedp::write_subscription_data_unsecure: ")
                  ACE_TEXT("Failed to convert DiscoveredReaderData ")
@@ -5295,12 +5364,14 @@ Sedp::write_subscription_data_secure(UsedEndpoints& ue,
         return DDS::RETCODE_PRECONDITION_NOT_MET;
       }
       const DCPS::TypeInformation typeinfo(*ls.typeInfoFor(reader, &useFlexibleTypes));
-      if (!ParameterListConverter::to_param_list(drd, plist, true, typeinfo)) {
+      if (!ParameterListConverter::to_param_list(
+            drd, plist, true, typeinfo, local_duration_encoding_)) {
         ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: Sedp::write_subscription_data_secure: "
                    "Failed to convert DiscoveredReaderData to ParameterList (Flags_FlexibleTypeSupport)\n"));
         result = DDS::RETCODE_ERROR;
       }
-    } else if (!ParameterListConverter::to_param_list(drd, plist, use_xtypes_, ls.type_info_)) {
+    } else if (!ParameterListConverter::to_param_list(
+          drd, plist, use_xtypes_, ls.type_info_, local_duration_encoding_)) {
       ACE_ERROR((LM_ERROR,
                  ACE_TEXT("(%P|%t) ERROR: Sedp::write_subscription_data_secure: ")
                  ACE_TEXT("Failed to convert DiscoveredReaderData ")
@@ -6202,7 +6273,7 @@ Sedp::rtps_relay_address(const NetworkAddress& address)
   config_store_->set(transport_inst_->config_key("DATA_RTPS_RELAY_ADDRESS").c_str(),
                      address,
                      ConfigStoreImpl::Format_Required_Port,
-                     ConfigStoreImpl::Kind_IPV4);
+                     ConfigStoreImpl::Kind_ANY);
 }
 
 void
@@ -6211,13 +6282,13 @@ Sedp::stun_server_address(const NetworkAddress& address)
   config_store_->set(transport_inst_->config_key("DATA_STUN_SERVER_ADDRESS").c_str(),
                      address,
                      ConfigStoreImpl::Format_Required_Port,
-                     ConfigStoreImpl::Kind_IPV4);
+                     ConfigStoreImpl::Kind_ANY);
 }
 
 void
 Sedp::append_transport_statistics(DCPS::TransportStatisticsSequence& seq)
 {
-  transport_inst_->append_transport_statistics(seq, get_domain_id(), 0);
+  transport_inst_->append_transport_statistics(seq, get_domain_id(), spdp_.guid());
 }
 
 bool locators_changed(const ParticipantProxy_t& x,
@@ -7337,7 +7408,7 @@ bool Sedp::need_type_info(const XTypes::TypeInformation* type_info,
   return need_minimal || need_complete;
 }
 
-void Sedp::remove_expired_endpoints(const MonotonicTimePoint& /*now*/)
+void Sedp::remove_expired_endpoints()
 {
   ACE_GUARD(ACE_Thread_Mutex, g, lock_);
   const MonotonicTimePoint now = MonotonicTimePoint::now();
@@ -7404,7 +7475,7 @@ void Sedp::populate_origination_locator(const GUID_t& id, DCPS::TransportLocator
     RTPS::message_block_to_sequence(mb_locator, tl.data);
   } else {
     const EntityId_t entity = conv.isReader() ? ENTITYID_SEDP_BUILTIN_SUBSCRIPTIONS_WRITER : ENTITYID_SEDP_BUILTIN_PUBLICATIONS_WRITER;
-    transport_inst_->get_last_recv_locator(make_id(id, entity), vendor_id.vendorId, tl, get_domain_id(), 0);
+    transport_inst_->get_last_recv_locator(make_id(id, entity), vendor_id.vendorId, tl, get_domain_id(), spdp_.guid());
   }
 }
 
@@ -7631,7 +7702,7 @@ void Sedp::match_continue(UsedEndpoints& ue,
       XTypes::TypeAssignability ta(type_lookup_service_, type_consistency);
 
       if (drQos->type_consistency.kind == DDS::ALLOW_TYPE_COERCION) {
-        consistent = ta.assignable(reader_type_id, writer_type_id);
+        consistent = ta.assignable(*reader_type_info, *writer_type_info);
       } else {
         // The two types must be equivalent for DISALLOW_TYPE_COERCION
         consistent = reader_type_id == writer_type_id;

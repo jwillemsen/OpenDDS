@@ -128,19 +128,17 @@ GuidAddrSet::CreatedAddrSetStats GuidAddrSet::find_or_create(const OpenDDS::DCPS
   const bool create = it == guid_addr_set_map_.end();
   if (create) {
     const auto it_bool_pair =
-      guid_addr_set_map_.insert(std::make_pair(guid, AddrSetStats(guid, now, relay_stats_reporter_, total_ips_, total_ports_)));
+      guid_addr_set_map_.insert(std::make_pair(guid, AddrSetStats(now, relay_stats_reporter_, total_ips_, total_ports_)));
     it = it_bool_pair.first;
     relay_stats_reporter_.local_active_participants(guid_addr_set_map_.size(), now);
   }
   return {create, it->second};
 }
 
-ParticipantStatisticsReporter&
+void
 GuidAddrSet::record_activity(const AddrPort& remote_address,
                              const OpenDDS::DCPS::MonotonicTimePoint& now,
                              const OpenDDS::DCPS::GUID_t& src_guid,
-                             MessageType msg_type,
-                             const size_t& msg_len,
                              bool from_application_participant,
                              bool* allow_stun_responses,
                              const RelayHandler& handler)
@@ -224,13 +222,19 @@ GuidAddrSet::record_activity(const AddrPort& remote_address,
     schedule_expiration();
   }
 
-  ParticipantStatisticsReporter& stats_reporter =
-    *addr_set_stats.select_stats_reporter(remote_address.port);
-  stats_reporter.input_message(msg_len, msg_type);
+  apply_drain_state(addr_set_stats, from_application_participant);
 
+  if (allow_stun_responses) {
+    *allow_stun_responses = addr_set_stats.allow_stun_responses;
+  }
+}
+
+void
+GuidAddrSet::apply_drain_state(AddrSetStats& addr_set_stats, bool from_application_participant)
+{
   switch (drain_state_) {
   case DrainState::DS_NORMAL:
-    if (!addr_set_stats.allow_stun_responses) {
+    if (!addr_set_stats.allow_stun_responses && !addr_set_stats.in_denied_partition) {
       addr_set_stats.allow_stun_responses = true;
       --mark_count_;
     }
@@ -243,12 +247,6 @@ GuidAddrSet::record_activity(const AddrPort& remote_address,
     }
     break;
   }
-
-  if (allow_stun_responses) {
-    *allow_stun_responses = addr_set_stats.allow_stun_responses;
-  }
-
-  return stats_reporter;
 }
 
 void GuidAddrSet::schedule_rejected_address_expiration()
@@ -260,8 +258,8 @@ void GuidAddrSet::schedule_rejected_address_expiration()
   } else {
     if (!rejected_address_expiration_task_) {
       rejected_address_expiration_task_ =
-        OpenDDS::DCPS::make_rch<GuidAddrSetSporadicTask>(TheServiceParticipant->time_source(), reactor_task_,
-                                                         rchandle_from(this), &GuidAddrSet::process_rejected_address_expiration);
+        OpenDDS::DCPS::make_rch<OpenDDS::DCPS::SporadicEvent>(TheServiceParticipant->event_dispatcher(),
+                                                              OpenDDS::DCPS::make_rch<GuidAddrSetEvent>(rchandle_from(this), &GuidAddrSet::process_rejected_address_expiration));
     }
     rejected_address_expiration_task_->schedule(rejected_address_expiration_queue_.front()->second - OpenDDS::DCPS::MonotonicTimePoint::now());
   }
@@ -277,7 +275,7 @@ void GuidAddrSet::process_rejected_address_expiration(const OpenDDS::DCPS::Monot
       ACE_DEBUG((LM_INFO, "(%P|%t) INFO: GuidAddrSet::process_rejected_address_expiration "
                  "Rejected address %C expired %C ago, removing from rejected address map.\n",
                  OpenDDS::DCPS::LogAddr(reject->first).c_str(),
-                 ago.str().c_str()));
+                 ago.sec_str().c_str()));
     }
     rejected_address_map_.erase(reject);
     rejected_address_expiration_queue_.pop_front();
@@ -295,8 +293,8 @@ void GuidAddrSet::schedule_deactivation()
   } else {
     if (!deactivation_task_) {
       deactivation_task_ =
-        OpenDDS::DCPS::make_rch<GuidAddrSetSporadicTask>(TheServiceParticipant->time_source(), reactor_task_,
-                                                         rchandle_from(this), &GuidAddrSet::process_deactivation);
+        OpenDDS::DCPS::make_rch<OpenDDS::DCPS::SporadicEvent>(TheServiceParticipant->event_dispatcher(),
+                                                              OpenDDS::DCPS::make_rch<GuidAddrSetEvent>(rchandle_from(this), &GuidAddrSet::process_deactivation));
     }
     deactivation_task_->schedule(deactivation_guid_queue_.front().first - OpenDDS::DCPS::MonotonicTimePoint::now());
   }
@@ -337,8 +335,8 @@ void GuidAddrSet::schedule_expiration()
   } else {
     if (!expiration_task_) {
       expiration_task_ =
-        OpenDDS::DCPS::make_rch<GuidAddrSetSporadicTask>(TheServiceParticipant->time_source(), reactor_task_,
-                                                         rchandle_from(this), &GuidAddrSet::process_expiration);
+        OpenDDS::DCPS::make_rch<OpenDDS::DCPS::SporadicEvent>(TheServiceParticipant->event_dispatcher(),
+                                                              OpenDDS::DCPS::make_rch<GuidAddrSetEvent>(rchandle_from(this), &GuidAddrSet::process_expiration));
     }
     expiration_task_->schedule(expiration_guid_addr_queue_.front().first - OpenDDS::DCPS::MonotonicTimePoint::now());
   }
@@ -375,7 +373,7 @@ void GuidAddrSet::process_expiration(const OpenDDS::DCPS::MonotonicTimePoint& no
                      "%C %C expired %C ago %C into session ips=%B total=%B remote=%B deactivation=%B expire=%B admit=%B\n",
                      guid_to_string(ga.guid).c_str(),
                      OpenDDS::DCPS::LogAddr(ga.address.addr).c_str(),
-                     ago.str().c_str(),
+                     ago.sec_str().c_str(),
                      get_session_time(ga.guid, now).sec_str().c_str(),
                      addr_stats.ip_to_ports.size(),
                      guid_addr_set_map_.size(),
@@ -412,10 +410,22 @@ void GuidAddrSet::maintain_admission_queue(const OpenDDS::DCPS::MonotonicTimePoi
   relay_stats_reporter_.admission_queue_size(admission_control_queue_.size(), now);
 }
 
-bool GuidAddrSet::ignore_rtps(bool from_application_participant,
-                              const OpenDDS::DCPS::GUID_t& guid,
-                              const OpenDDS::DCPS::MonotonicTimePoint& now,
-                              bool& admitted)
+void GuidAddrSet::freeup_admission_queue(const OpenDDS::DCPS::GuidPrefix_t& prefix)
+{
+  for (auto it = admission_control_queue_.begin(); it != admission_control_queue_.end(); ++it) {
+    if (std::memcmp(it->prefix_, prefix, sizeof(OpenDDS::DCPS::GuidPrefix_t)) == 0) {
+      admission_control_queue_.erase(it);
+      break;
+    }
+  }
+  relay_stats_reporter_.admission_queue_size(admission_control_queue_.size(), OpenDDS::DCPS::MonotonicTimePoint::now());
+}
+
+bool GuidAddrSet::defer_client(bool from_application_participant,
+                               const OpenDDS::DCPS::GUID_t& guid,
+                               const OpenDDS::DCPS::MonotonicTimePoint& now,
+                               bool already_checked_admit,
+                               bool& admitted)
 {
   const auto pos = guid_addr_set_map_.find(guid);
   if (pos == guid_addr_set_map_.end()) {
@@ -431,7 +441,7 @@ bool GuidAddrSet::ignore_rtps(bool from_application_participant,
     pos->second.allow_rtps = true;
 
     if (config_.log_activity()) {
-      ACE_DEBUG((LM_INFO, "(%P|%t) INFO: GuidAddrSet::ignore_rtps %C was admitted %C into session\n",
+      ACE_DEBUG((LM_INFO, "(%P|%t) INFO: GuidAddrSet::defer_client: %C was admitted %C into session\n",
                  guid_to_string(guid).c_str(),
                  pos->second.get_session_time(now).sec_str().c_str()));
     }
@@ -444,9 +454,12 @@ bool GuidAddrSet::ignore_rtps(bool from_application_participant,
     return true;
   }
 
-  if (!admitting()) {
+  if (!already_checked_admit && !admitting()) {
     // Too many new clients to admit another.
     relay_stats_reporter_.admission_deferral_count(now);
+
+    // Increase the cumulative count of unadmitted entries
+    relay_stats_reporter_.unadmitted_entry_count(now);
     return true;
   }
 
@@ -459,7 +472,7 @@ bool GuidAddrSet::ignore_rtps(bool from_application_participant,
   admitted = true;
 
   if (config_.log_activity()) {
-    ACE_DEBUG((LM_INFO, "(%P|%t) INFO: GuidAddrSet::ignore_rtps %C was admitted %C into session\n",
+    ACE_DEBUG((LM_INFO, "(%P|%t) INFO: GuidAddrSet::defer_client: %C was admitted %C into session\n",
                guid_to_string(guid).c_str(),
                pos->second.get_session_time(now).sec_str().c_str()));
   }
@@ -474,12 +487,6 @@ void GuidAddrSet::remove(const OpenDDS::DCPS::GUID_t& guid,
 {
   AddrSetStats& addr_stats = it->second;
   const auto session_time = addr_stats.get_session_time(now);
-  addr_stats.spdp_stats_reporter.report(addr_stats.session_start, now);
-  addr_stats.spdp_stats_reporter.unregister();
-  addr_stats.sedp_stats_reporter.report(addr_stats.session_start, now);
-  addr_stats.sedp_stats_reporter.unregister();
-  addr_stats.data_stats_reporter.report(addr_stats.session_start, now);
-  addr_stats.data_stats_reporter.unregister();
 
   for (const auto& by_ip : addr_stats.ip_to_ports) {
     const auto remote_iter = remote_map_.find(Remote(by_ip.first, guid));
@@ -493,7 +500,9 @@ void GuidAddrSet::remove(const OpenDDS::DCPS::GUID_t& guid,
     --mark_count_;
   }
 
+  cleanup_peers_pending_recipients(it);
   guid_addr_set_map_.erase(it);
+  remove_cross_relay_pending_recipients(guid);
   relay_stats_reporter_.local_active_participants(guid_addr_set_map_.size(), now);
   check_participants_limit();
 
@@ -511,6 +520,19 @@ void GuidAddrSet::remove(const OpenDDS::DCPS::GUID_t& guid,
 
   if (reporter) {
     reporter->set_alive(guid, false);
+  }
+}
+
+void GuidAddrSet::cleanup_peers_pending_recipients(const GuidAddrSetMap::iterator& it)
+{
+  // Remove a guid from the pending recipients list of each peer it has initiated async discovery with.
+  const auto& src_guid = it->first;
+  const auto& initiated_async_disc_with = it->second.initiated_async_discovery_with;
+  for (const auto& other_part : initiated_async_disc_with) {
+    auto other_it = guid_addr_set_map_.find(other_part);
+    if (other_it != guid_addr_set_map_.end()) {
+      other_it->second.pending_recipients.erase(src_guid);
+    }
   }
 }
 
@@ -557,10 +579,9 @@ void GuidAddrSet::admit_state(AdmitState as, const DDS::Time_t& now)
 void GuidAddrSet::drain_state(DrainState ds, const DDS::Time_t& now)
 {
   if (!drain_task_) {
-    drain_task_ = OpenDDS::DCPS::make_rch<GuidAddrSetSporadicTask>(TheServiceParticipant->time_source(),
-                                                                   reactor_task_,
-                                                                   rchandle_from(this),
-                                                                   &GuidAddrSet::process_drain_state);
+    drain_task_ =
+      OpenDDS::DCPS::make_rch<OpenDDS::DCPS::SporadicEvent>(TheServiceParticipant->event_dispatcher(),
+                                                            OpenDDS::DCPS::make_rch<GuidAddrSetEvent>(rchandle_from(this), &GuidAddrSet::process_drain_state));
   }
 
   if (drain_state_ != ds) {
@@ -597,6 +618,16 @@ void GuidAddrSet::populate_relay_status(RelayStatus& relay_status)
   relay_status.marked_participants(static_cast<uint32_t>(mark_count_));
 }
 
+void GuidAddrSet::deny(const OpenDDS::DCPS::GUID_t& guid)
+{
+  const auto it = guid_addr_set_map_.find(guid);
+  if (it != guid_addr_set_map_.end() && it->second.allow_stun_responses) {
+    it->second.allow_stun_responses = false;
+    it->second.in_denied_partition = true;
+    ++mark_count_;
+  }
+}
+
 void GuidAddrSet::ConfigReaderListener::on_data_available(InternalDataReader_rch reader)
 {
   using OpenDDS::DCPS::ConfigStoreImpl;
@@ -629,6 +660,42 @@ void GuidAddrSet::ConfigReaderListener::on_data_available(InternalDataReader_rch
       }
     }
   }
+}
+
+void GuidAddrSet::update_cross_relay_pending_recipients(const OpenDDS::DCPS::GUID_t& src_guid, const StringSet& to_partitions)
+{
+  for (const auto& part : to_partitions) {
+    cross_relay_pending_recipients_[part].insert(src_guid);
+  }
+  initiated_async_discovery_with_[src_guid].insert(to_partitions.begin(), to_partitions.end());
+}
+
+void GuidAddrSet::lookup_cross_relay_pending_recipients(GuidSet& pending_guids, const StringSequence& partitions) const
+{
+  for (const auto& part : partitions) {
+    const auto it = cross_relay_pending_recipients_.find(part);
+    if (it != cross_relay_pending_recipients_.end()) {
+      pending_guids.insert(it->second.begin(), it->second.end());
+    }
+  }
+}
+
+void GuidAddrSet::remove_cross_relay_pending_recipients(const OpenDDS::DCPS::GUID_t& guid)
+{
+  const auto it = initiated_async_discovery_with_.find(guid);
+  if (it != initiated_async_discovery_with_.end()) {
+    for (const auto& part : it->second) {
+      const auto it2 = cross_relay_pending_recipients_.find(part);
+      if (it2 != cross_relay_pending_recipients_.end()) {
+        it2->second.erase(guid);
+      }
+      if (it2 != cross_relay_pending_recipients_.end() && it2->second.empty()) {
+        cross_relay_pending_recipients_.erase(it2);
+      }
+    }
+  }
+
+  initiated_async_discovery_with_.erase(guid);
 }
 
 }

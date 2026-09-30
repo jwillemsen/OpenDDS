@@ -191,15 +191,19 @@ The command-line options for the RtpsRelay:
 
 .. option:: -BufferSize <integer>
 
-  Send of send and receive buffers in bytes
+  Size of send and receive buffers in bytes
 
 .. option:: -Lifespan <seconds>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LIFESPAN``
 
   RtpsRelay will only forward a datagram to a client if it has received a datagram from the client in this amount of time.
   Otherwise, participant is marked as not alive.
   The default is 60 seconds.
 
 .. option:: -InactivePeriod <seconds>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_INACTIVE_PERIOD``
 
   RtpsRelay will mark participant as not active if does not receive a datagram from the client in this amount of time.
   The default is 60 seconds.
@@ -240,53 +244,75 @@ The command-line options for the RtpsRelay:
 
 .. option:: -LogWarnings 0|1
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_WARNINGS``
+
   Enable/disable logging of warning events.
 
 .. option:: -LogDiscovery 0|1
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_DISCOVERY``
 
   Enable/disable logging of discovery events.
 
 .. option:: -LogActivity 0|1
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_ACTIVITY``
+
   Enable/disable logging of activity events.
 
 .. option:: -LogHttp 0|1
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_HTTP``
 
   Enable/disable logging in the :ref:`meta discovery HTTP server <internet_enabled_rtps--metadisc-server>`.
 
 .. option:: -LogUtilizationChanges 0|1
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_UTILIZATION_CHANGES``
+
   Enable/disable logging of thread utilization changes that exceed a certain threshhold.
 
 .. option:: -LogRelayStatistics <seconds>
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_RELAY_STATISTICS``
+
 .. option:: -LogHandlerStatistics <seconds>
 
-.. option:: -LogParticipantStatistics <seconds>
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_HANDLER_STATISTICS``
 
   Write statistics for the various event types to the log at the given interval, defaults to 0 (disabled).
 
 .. option:: -PublishRelayStatistics <seconds>
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_PUBLISH_RELAY_STATISTICS``
+
 .. option:: -PublishHandlerStatistics <seconds>
 
-.. option:: -PublishParticipantStatistics <seconds>
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_PUBLISH_HANDLER_STATISTICS``
 
   Configure the relay to publish usage statistics on DDS topics at the given interval, defaults to 0 (disabled).
 
 .. option:: -LogThreadStatus 0|1
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_THREAD_STATUS``
+
   If :cfg:prop:`thread monitoring is enabled <DCPSThreadStatusInterval>`, log the status of the threads in the RtpsRelay, defaults to 0 (disabled).
 
 .. option:: -ThreadStatusSafetyFactor <integer>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_THREAD_STATUS_SAFETY_FACTOR``
 
   Restart if :cfg:prop:`thread monitoring is enabled <DCPSThreadStatusInterval>` and a thread has not checked in for this many reporting intervals, default 3.
 
 .. option:: -UtilizationLimit <decimal>
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_UTILIZATION_LIMIT``
+
   If :cfg:prop:`thread monitoring is enabled <DCPSThreadStatusInterval>`, the RtpsRelay will not accept new client participants if the CPU utilization of any thread is above this limit, default .95.
 
 .. option:: -AdmissionControlQueueSize <count>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_ADMISSION_CONTROL_QUEUE_SIZE``
 
   The max number of new client participants that are allowed to perform discovery.
   If the admission control queue is full, then new client participants are not admitted.
@@ -294,10 +320,14 @@ The command-line options for the RtpsRelay:
 
 .. option:: -AdmissionControlQueueDuration <seconds>
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_ADMISSION_CONTROL_QUEUE_DURATION``
+
   New client participants in the :option:`admission control queue <-AdmissionControlQueueSize>` that are taking longer than this many seconds to perform discovery are removed from the queue.
   Default is 0.
 
 .. option:: -AdmissionMaxParticipantsRange <low>-<high>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_MAX_PARTICIPANTS_LOW_WATER``, ``RTPS_RELAY_MAX_PARTICIPANTS_HIGH_WATER``
 
   If this option is used, the relay's "admitting" state will be set to false when the number of active participants
   reaches the <high> value.  After the number of active participants falls below the <low> value, this metric will
@@ -305,9 +335,13 @@ The command-line options for the RtpsRelay:
 
 .. option:: -PublishRelayStatus <seconds>
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_PUBLISH_RELAY_STATUS``
+
   Setting this to a positive integer causes the relay to publish its status at that interval.
 
 .. option:: -PublishRelayStatusLiveliness <seconds>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_PUBLISH_RELAY_STATUS_LIVELINESS``
 
   Setting this to a positive integer causes the relay to set the :ref:`qos-liveliness` on the relay status topic.
 
@@ -345,7 +379,68 @@ The command-line options for the RtpsRelay:
 
 .. option:: -DrainInterval <seconds>
 
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_DRAIN_INTERVAL``
+
   Initial value for the client draining rate. Draining will not start until enabled by a command sent from :program:`RtpsRelayControl`.
+
+.. option:: -DeniedPartitionsTimeout <seconds>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_DENIED_PARTITIONS_TIMEOUT``
+
+  Expected amount of time a denied partition will remain in the denied partitions list before being cleaned up.
+  The default is 900 seconds.
+
+.. option:: -CertificateIdPattern <regex>
+
+  This requires security to be enabled.
+  Specify a regex pattern used to match a client participant's certificate subject name to enable the asynchronous discovery feature.
+  For a matched client, the first group match will be used as the key to cache the client's partitions.
+  The cached partitions will be used to forward the matching client's messages immediately in subsequent sessions before the client
+  completes discovery with the relay. Effectively, this allows the client to initiate discovery with other clients in parallel
+  with its discovery with the relay.
+  The default is the empty string which disables the asynchronous discovery feature.
+
+.. option:: -SynchronizeAsyncDiscoveryCache 0|1
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE``
+
+  Specify whether to synchronize the local asynchronous discovery cache with other relay instances and enable
+  processing of cache updates from them.
+  This requires a non-empty and valid regex pattern to be specified for :option:`-CertificateIdPattern`.
+  The default is 0 (disabled).
+
+.. option:: -AsyncDiscoveryCacheTimeout <seconds>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT``
+
+  Specify the duration for an inactive cache entry to be removed from the asynchronous discovery cache for local client participants.
+  The default is 7 days.
+
+.. option:: -AsyncDiscoveryRemoteCacheTimeout <seconds>
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT``
+
+  Specify the duration for an inactive cache entry to be removed from the asynchronous discovery cache for remote client participants,
+  i.e., those that connect to other relay instances.
+  The default is 30 days.
+
+.. option:: -LogAsyncDiscovery 0|1
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_LOG_ASYNC_DISCOVERY``
+
+  Specify whether to log the activities related to the asynchronous discovery feature,
+  e.g., cache hits/misses, cache updates and prunes.
+  The default is 0 (disabled).
+
+.. option:: -EarlyAdmissionQueueFreeup 0|1
+
+  :ref:`Config store key <config-store-keys>`: ``RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREEUP``
+
+  Specify whether to remove an entry from the admission control queue when the relay detects that a reader or writer
+  from the corresponding client participant is no longer alive. This is taken as a rough indicator that the client
+  participant is disconnecting from the relay, and its entry in the admission queue can be removed to allow other
+  participants to be admitted.
+  The default is 0 (disabled).
 
 .. _internet_enabled_rtps--rtps_relay_control:
 
@@ -404,6 +499,10 @@ Parameters that may be dynamically configured in the ``RtpsRelay`` include:
 * ``RTPS_RELAY_DRAIN_STATE`` set to either ``Normal`` or ``Draining``.  When ``Draining`` the RtpsRelay will, one client at a time, stop responding to STUN requests from that client.  Clients should monitor STUN responses using the :ref:`built_in_topics--openddsconnectionrecord-topic` and find a new relay instance when STUN responses cease.
 
 * ``RTPS_RELAY_ADMIT_STATE`` set to either ``Normal`` or ``NotAdmitting``.  In most cases users will want an instance that is ``Draining`` to also be ``NotAdmitting`` in order to prevent new clients from associating.
+
+* Any of the command-line options listed with a "Config store key" in :ref:`internet_enabled_rtps--usage`
+
+* Many of the configuration properties in :ref:`run_time_configuration` listed with a "Config store key"
 
 .. _internet_enabled_rtps--deployment-considerations:
 

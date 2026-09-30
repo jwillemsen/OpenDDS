@@ -2,6 +2,7 @@
 
 #include <dds/DCPS/Qos_Helper.h>
 #include <dds/DCPS/LogAddr.h>
+#include <dds/DCPS/ServiceEventDispatcher.h>
 
 #include <gtestWrapper.h>
 
@@ -167,6 +168,32 @@ TEST(dds_DCPS_ConfigStoreImpl, set_get_uint32)
   EXPECT_EQ(store.get_uint32("key", 0), DDS::DURATION_INFINITE_NSEC);
 }
 
+TEST(dds_DCPS_ConfigStoreImpl, set_get_int64)
+{
+  ConfigTopic_rch topic = make_rch<ConfigTopic>();
+  TimeSource time_source;
+  ConfigStoreImpl store(topic, time_source);
+  static const DDS::Int64 val = -6000000000;
+  EXPECT_EQ(store.get_int64("key", val), val);
+  store.set_int64("key", val - 1);
+  EXPECT_EQ(store.get_int64("key", val), val - 1);
+  store.set_string("key", "not an int64");
+  EXPECT_EQ(store.get_int64("key", val), val);
+}
+
+TEST(dds_DCPS_ConfigStoreImpl, set_get_uint64)
+{
+  ConfigTopic_rch topic = make_rch<ConfigTopic>();
+  TimeSource time_source;
+  ConfigStoreImpl store(topic, time_source);
+  static const DDS::UInt64 val = 6000000000;
+  EXPECT_EQ(store.get_uint64("key", val), val);
+  store.set_uint64("key", val + 1);
+  EXPECT_EQ(store.get_uint64("key", val), val + 1);
+  store.set_string("key", "not a uint64");
+  EXPECT_EQ(store.get_uint64("key", val), val);
+}
+
 TEST(dds_DCPS_ConfigStoreImpl, set_get_float64)
 {
   ConfigTopic_rch topic = make_rch<ConfigTopic>();
@@ -247,6 +274,14 @@ TEST(dds_DCPS_ConfigStoreImpl, set_get_StringList)
   EXPECT_EQ(store.get("key", default_list), default_list);
   store.set("key", other_list);
   EXPECT_EQ(store.get("key", default_list), other_list);
+
+  // Whitespace around elements is trimmed (GitHub issue #1470).
+  store.set_string("key", "net1, net2 ,net3");
+  ConfigStoreImpl::StringList trimmed_list;
+  trimmed_list.push_back("net1");
+  trimmed_list.push_back("net2");
+  trimmed_list.push_back("net3");
+  EXPECT_EQ(store.get("key", default_list), trimmed_list);
 }
 
 TEST(dds_DCPS_ConfigStoreImpl, set_get_IntList)
@@ -558,7 +593,8 @@ namespace {
 
 TEST(dds_DCPS_ConfigStoreImpl, process_section)
 {
-  JobQueue_rch job_queue = make_rch<JobQueue>(ACE_Reactor::instance());
+  OpenDDS::DCPS::EventDispatcher_rch event_dispatcher = OpenDDS::DCPS::make_rch<OpenDDS::DCPS::ServiceEventDispatcher>(1);
+  JobQueue_rch job_queue = make_rch<JobQueue>(event_dispatcher);
   ConfigTopic_rch topic = make_rch<ConfigTopic>();
   TimeSource time_source;
   ConfigStoreImpl config_store(topic, time_source);
@@ -624,7 +660,8 @@ TEST(dds_DCPS_ConfigStoreImpl, get_section_names)
 
 TEST(dds_DCPS_ConfigStoreImpl, get_section_values)
 {
-  JobQueue_rch job_queue = make_rch<JobQueue>(ACE_Reactor::instance());
+  OpenDDS::DCPS::EventDispatcher_rch event_dispatcher = OpenDDS::DCPS::make_rch<OpenDDS::DCPS::ServiceEventDispatcher>(1);
+  JobQueue_rch job_queue = make_rch<JobQueue>(event_dispatcher);
   ConfigTopic_rch topic = make_rch<ConfigTopic>();
   TimeSource time_source;
   ConfigStoreImpl config_store(topic, time_source);

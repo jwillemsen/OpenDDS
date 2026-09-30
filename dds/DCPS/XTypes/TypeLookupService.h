@@ -43,6 +43,7 @@ public:
   /// For converting between complete to minimal TypeObject of remote types
   ///@{
   void update_type_identifier_map(const TypeIdentifierPairSeq& tid_pairs);
+  bool get_minimal_type_identifier(const TypeIdentifier& complete_ti, TypeIdentifier& minimal_ti) const;
   bool complete_to_minimal_type_object(const TypeObject& cto, TypeObject& mto) const;
   ///@}
 
@@ -51,6 +52,7 @@ public:
   typedef OPENDDS_MAP(DCPS::GUID_t, DynamicTypeMap) GuidTypeMap;
   DDS::DynamicType_ptr complete_to_dynamic(const CompleteTypeObject& cto, const DCPS::GUID_t& guid);
   void remove_guid_from_dynamic_map(const DCPS::GUID_t& guid);
+  void release_guid_from_dynamic_map(const DCPS::GUID_t& guid);
 
   bool has_complete(const TypeIdentifier& ti) const;
   DDS::DynamicType_ptr type_identifier_to_dynamic(const TypeIdentifier& ti, const DCPS::GUID_t& guid);
@@ -95,8 +97,6 @@ private:
   typedef OPENDDS_MAP(TypeIdentifier, TypeIdentifier) TypeIdentifierMap;
   TypeIdentifierMap complete_to_minimal_ti_map_;
 
-  bool get_minimal_type_identifier(const TypeIdentifier& ct, TypeIdentifier& mt) const;
-
   // Initialize received TypeObjects to defaults.
   bool set_type_object_defaults(TypeObject& to);
 
@@ -116,6 +116,7 @@ private:
   DDS::MemberDescriptor* complete_union_member_to_member_descriptor(const CompleteUnionMember& cm, const DCPS::GUID_t& guid);
   DDS::MemberDescriptor* complete_annotation_member_to_member_descriptor(const CompleteAnnotationParameter& cm, const DCPS::GUID_t& guid);
   void complete_to_dynamic_i(DynamicTypeImpl* dt, const CompleteTypeObject& cto, const DCPS::GUID_t& guid);
+  void remove_guid_from_dynamic_map_i(const DCPS::GUID_t& guid, bool clear);
   GuidTypeMap gt_map_;
 #endif
   /// Map from BuiltinTopicKey_t of remote endpoint to its TypeInformation.

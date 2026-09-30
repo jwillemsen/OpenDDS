@@ -15,7 +15,7 @@
 
 namespace RtpsRelay {
 
-class RelayStatisticsReporter {
+class RelayStatisticsReporter : public OpenDDS::DCPS::ConfigListener {
 public:
   RelayStatisticsReporter(const Config& config,
                           RelayStatisticsDataWriter_var writer);
@@ -195,6 +195,22 @@ public:
     report(guard, now);
   }
 
+  void async_discovery_cache_update_sub_count(uint32_t count, const OpenDDS::DCPS::MonotonicTimePoint& now)
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    log_relay_statistics_.async_discovery_cache_update_sub_count() = count;
+    publish_relay_statistics_.async_discovery_cache_update_sub_count() = count;
+    report(guard, now);
+  }
+
+  void async_discovery_cache_prune_sub_count(uint32_t count, const OpenDDS::DCPS::MonotonicTimePoint& now)
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    log_relay_statistics_.async_discovery_cache_prune_sub_count() = count;
+    publish_relay_statistics_.async_discovery_cache_prune_sub_count() = count;
+    report(guard, now);
+  }
+
   void relay_partitions_pub_count(uint32_t count, const OpenDDS::DCPS::MonotonicTimePoint& now)
   {
     ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
@@ -216,6 +232,14 @@ public:
     ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
     ++log_relay_statistics_.admission_deferral_count();
     ++publish_relay_statistics_.admission_deferral_count();
+    report(guard, now);
+  }
+
+  void unadmitted_entry_count(const OpenDDS::DCPS::MonotonicTimePoint& now)
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    ++log_relay_statistics_.unadmitted_entry_count();
+    ++publish_relay_statistics_.unadmitted_entry_count();
     report(guard, now);
   }
 
@@ -388,6 +412,42 @@ public:
     report(guard, OpenDDS::DCPS::MonotonicTimePoint::now());
   }
 
+  void async_discovery_local_cache_size(size_t count, const OpenDDS::DCPS::MonotonicTimePoint& now)
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    const auto count32 = static_cast<uint32_t>(count);
+    log_relay_statistics_.async_discovery_local_cache_size() = count32;
+    publish_relay_statistics_.async_discovery_local_cache_size() = count32;
+    report(guard, now);
+  }
+
+  void async_discovery_local_expiration_map_size(size_t count, const OpenDDS::DCPS::MonotonicTimePoint& now)
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    const auto count32 = static_cast<uint32_t>(count);
+    log_relay_statistics_.async_discovery_local_expiration_map_size() = count32;
+    publish_relay_statistics_.async_discovery_local_expiration_map_size() = count32;
+    report(guard, now);
+  }
+
+  void async_discovery_remote_cache_size(size_t count, const OpenDDS::DCPS::MonotonicTimePoint& now)
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    const auto count32 = static_cast<uint32_t>(count);
+    log_relay_statistics_.async_discovery_remote_cache_size() = count32;
+    publish_relay_statistics_.async_discovery_remote_cache_size() = count32;
+    report(guard, now);
+  }
+
+  void async_discovery_remote_expiration_map_size(size_t count, const OpenDDS::DCPS::MonotonicTimePoint& now)
+  {
+    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+    const auto count32 = static_cast<uint32_t>(count);
+    log_relay_statistics_.async_discovery_remote_expiration_map_size() = count32;
+    publish_relay_statistics_.async_discovery_remote_expiration_map_size() = count32;
+    report(guard, now);
+  }
+
   void report()
   {
     ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
@@ -408,6 +468,9 @@ private:
                       const OpenDDS::DCPS::MonotonicTimePoint& now,
                       bool force);
 
+  void on_data_available(InternalDataReader_rch reader) override;
+  void configure_stats_period(const OpenDDS::DCPS::TimeDuration& log,
+                              const OpenDDS::DCPS::TimeDuration& publish) const;
   void get_opendds_stats(std::vector<OpenDDSModuleStatistics>& out);
   static void get_process_stats(RelayStatistics& out);
 

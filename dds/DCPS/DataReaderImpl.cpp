@@ -78,7 +78,11 @@ DataReaderImpl::DataReaderImpl()
   , reactor_(0)
   , last_deadline_missed_total_count_(0)
   , deadline_queue_enabled_(false)
-  , deadline_task_(make_rch<DRISporadicTask>(TheServiceParticipant->time_source(), TheServiceParticipant->reactor_task(), rchandle_from(this), &DataReaderImpl::deadline_task))
+  , deadline_task_(make_rch<SporadicEvent>(TheServiceParticipant->event_dispatcher(), make_rch<DRIEvent>(rchandle_from(this), &DataReaderImpl::deadline_task)))
+  , next_lifespan_expiration_(MonotonicTimePoint::zero_value)
+  , lifespan_task_(make_rch<SporadicEvent>(TheServiceParticipant->event_dispatcher(),
+                                           make_rch<DRIEvent>(rchandle_from(this),
+                                                              &DataReaderImpl::lifespan_task)))
   , is_bit_(false)
   , always_get_history_(false)
   , statistics_enabled_(false)
@@ -136,6 +140,7 @@ DataReaderImpl::~DataReaderImpl()
   DBG_ENTRY_LVL("DataReaderImpl", "~DataReaderImpl", 6);
 
   deadline_task_->cancel();
+  lifespan_task_->cancel();
 
 #ifndef OPENDDS_SAFETY_PROFILE
   RcHandle<DomainParticipantImpl> participant = participant_servant_.lock();
@@ -160,7 +165,7 @@ DataReaderImpl::cleanup()
 #ifndef OPENDDS_NO_OWNERSHIP_KIND_EXCLUSIVE
   OwnershipManagerPtr owner_manager = this->ownership_manager();
   if (owner_manager) {
-    owner_manager->unregister_reader(topic_servant_->type_name(), this);
+    owner_manager->unregister_reader(topic_servant_->topic_name(), this);
   }
 #endif
 
@@ -1189,7 +1194,7 @@ DataReaderImpl::enable()
   if (topic_servant_ && !transport_disabled_) {
     try {
       this->enable_transport(this->qos_.reliability.kind == DDS::RELIABLE_RELIABILITY_QOS,
-                             this->qos_.durability.kind > DDS::VOLATILE_DURABILITY_QOS, participant.get());
+                             this->qos_.durability.kind > DDS::VOLATILE_DURABILITY_QOS, participant->get_id());
     } catch (const Transport::Exception&) {
       ACE_ERROR((LM_ERROR,
           ACE_TEXT("(%P|%t) ERROR: DataReaderImpl::enable, ")
@@ -1374,7 +1379,39 @@ DataReaderImpl::data_received(const ReceivedDataSample& sample)
     SubscriptionInstance_rch instance;
     if (!check_historic(sample)) break;
 
-    DataSampleHeader const & header = sample.header_;
+    const ReceivedDataSample* sample_for_processing = &sample;
+    ReceivedDataSample sample_with_lifespan;
+
+    // RTPS communicates Lifespan as writer QoS.  It is not required to be
+    // repeated as inline QoS on every DATA submessage, so attach the
+    // discovered writer's policy to the internal per-sample header.
+    if (!is_bit()
+        && sample.header_.message_id_ == SAMPLE_DATA
+        && !sample.header_.lifespan_duration_) {
+      WriterInfo_rch writer;
+      {
+        ACE_READ_GUARD(ACE_RW_Thread_Mutex, read_guard, writers_lock_);
+        const WriterMapType::const_iterator pos =
+          writers_.find(sample.header_.publication_id_);
+        if (pos != writers_.end()) {
+          writer = pos->second;
+        }
+      }
+      if (writer) {
+        const DDS::Duration_t lifespan =
+          writer->writer_qos_lifespan().duration;
+        if (!is_infinite(lifespan)) {
+          sample_with_lifespan = sample;
+          DataSampleHeader& header = sample_with_lifespan.header_;
+          header.lifespan_duration_ = true;
+          header.lifespan_duration_sec_ = lifespan.sec;
+          header.lifespan_duration_nanosec_ = lifespan.nanosec;
+          sample_for_processing = &sample_with_lifespan;
+        }
+      }
+    }
+
+    const DataSampleHeader& header = sample_for_processing->header_;
 
     this->writer_activity(header);
 
@@ -1397,7 +1434,7 @@ DataReaderImpl::data_received(const ReceivedDataSample& sample)
 
     bool is_new_instance = false;
     bool filtered = false;
-    dds_demarshal(sample, publication_handle, instance, is_new_instance, filtered,
+    dds_demarshal(*sample_for_processing, publication_handle, instance, is_new_instance, filtered,
                   sample.header_.key_fields_only_ ? KEY_ONLY_MARSHALING : FULL_MARSHALING);
 
     // Per sample logging
@@ -1646,22 +1683,33 @@ DataReaderImpl::check_transport_qos(const TransportInst& ti)
   return true;
 }
 
-void DataReaderImpl::notify_read_conditions()
-{
-  //sample lock is already held
-  ReadConditionSet local_read_conditions = read_conditions_;
-  ACE_GUARD(Reverse_Lock_t, unlock_guard, reverse_sample_lock_);
+namespace {
 
-  for (ReadConditionSet::iterator it = local_read_conditions.begin(),
-      end = local_read_conditions.end(); it != end; ++it) {
-    ConditionImpl* ci = dynamic_cast<ConditionImpl*>(it->in());
+class SignalAll: public EventBase {
+public:
+  explicit SignalAll(const DDS::ReadCondition_var& rc) : rc_(rc) {}
+  void handle_event() {
+    ConditionImpl* ci = dynamic_cast<ConditionImpl*>(rc_.in());
     if (ci) {
       ci->signal_all();
     } else {
       ACE_ERROR((LM_ERROR,
-        ACE_TEXT("(%P|%t) ERROR: DataReaderImpl::notify_read_conditions: ")
+        ACE_TEXT("(%P|%t) ERROR: DataReaderImpl.cpp SignalAll::handle_event: ")
         ACE_TEXT("Failed to obtain ConditionImpl - can't notify.\n")));
     }
+  }
+private:
+  DDS::ReadCondition_var rc_;
+};
+
+}
+
+void DataReaderImpl::notify_read_conditions()
+{
+  //sample lock is already held
+  for (ReadConditionSet::iterator it = read_conditions_.begin(),
+      end = read_conditions_.end(); it != end; ++it) {
+    TheServiceParticipant->event_dispatcher()->dispatch(make_rch<SignalAll>(*it));
   }
 }
 
@@ -2637,10 +2685,68 @@ void DataReaderImpl::post_read_or_take()
   }
 }
 
-ACE_Reactor_Timer_Interface*
-DataReaderImpl::get_reactor()
+void DataReaderImpl::schedule_lifespan(const ReceivedDataElement* sample)
 {
-  return this->reactor_;
+  // sample_lock_ must be held.
+  const MonotonicTimePoint expiration = sample->expiration_time_;
+  if (expiration == MonotonicTimePoint::zero_value) {
+    return;
+  }
+
+  if (next_lifespan_expiration_ == MonotonicTimePoint::zero_value
+      || expiration < next_lifespan_expiration_) {
+    next_lifespan_expiration_ = expiration;
+    lifespan_task_->cancel();
+    const MonotonicTimePoint now = MonotonicTimePoint::now();
+    lifespan_task_->schedule(expiration > now
+      ? expiration - now : TimeDuration::zero_value);
+  }
+}
+
+void DataReaderImpl::lifespan_task(const MonotonicTimePoint& now)
+{
+  ThreadStatusManager::Event ev(TheServiceParticipant->get_thread_status_manager());
+
+  ACE_GUARD(ACE_Recursive_Thread_Mutex, guard, sample_lock_);
+  next_lifespan_expiration_ = MonotonicTimePoint::zero_value;
+
+  {
+    ACE_GUARD(ACE_Recursive_Thread_Mutex, instance_guard, instances_lock_);
+    for (SubscriptionInstanceMapType::iterator iter = instances_.begin();
+         iter != instances_.end();) {
+      const SubscriptionInstance_rch instance = iter->second;
+      // Removing the last sample can release and erase this instance.
+      ++iter;
+      ReceivedDataElementList& samples = instance->rcvd_samples_;
+
+      for (ReceivedDataElement* item = samples.get_next(0); item;) {
+        ReceivedDataElement* const next = samples.get_next(item);
+        const MonotonicTimePoint expiration = item->expiration_time_;
+        if (expiration != MonotonicTimePoint::zero_value) {
+          if (expiration <= now) {
+            const bool instance_released = samples.remove(item);
+            item->dec_ref();
+            if (instance_released) {
+              break;
+            }
+          } else if (next_lifespan_expiration_ == MonotonicTimePoint::zero_value
+                     || expiration < next_lifespan_expiration_) {
+            next_lifespan_expiration_ = expiration;
+          }
+        }
+        item = next;
+      }
+    }
+  }
+
+  if (!have_sample_states(DDS::ANY_SAMPLE_STATE)) {
+    post_read_or_take();
+  }
+
+  if (next_lifespan_expiration_ != MonotonicTimePoint::zero_value) {
+    lifespan_task_->schedule(next_lifespan_expiration_ > now
+      ? next_lifespan_expiration_ - now : TimeDuration::zero_value);
+  }
 }
 
 OpenDDS::DCPS::GUID_t
@@ -3131,14 +3237,11 @@ DataReaderImpl::get_ice_endpoint()
 
 DDS::ReturnCode_t DataReaderImpl::setup_deserialization()
 {
-  bool xcdr1_mutable = false;
   bool illegal_unaligned = false;
   for (CORBA::ULong i = 0; i < qos_.representation.value.length(); ++i) {
     Encoding::Kind encoding_kind;
     if (repr_to_encoding_kind(qos_.representation.value[i], encoding_kind)) {
-      if (encoding_kind == Encoding::KIND_XCDR1 && type_support_->max_extensibility() == MUTABLE) {
-        xcdr1_mutable = true;
-      } else if (encoding_kind == Encoding::KIND_UNALIGNED_CDR && cdr_encapsulation()) {
+      if (encoding_kind == Encoding::KIND_UNALIGNED_CDR && cdr_encapsulation()) {
         illegal_unaligned = true;
       } else {
         decoding_modes_.insert(encoding_kind);
@@ -3153,9 +3256,7 @@ DDS::ReturnCode_t DataReaderImpl::setup_deserialization()
   if (decoding_modes_.empty()) {
     if (DCPS_debug_level) {
       DCPS::String error_message;
-      if (xcdr1_mutable) {
-        error_message = " Unsupported combination of XCDR1 and mutable";
-      } else if (illegal_unaligned) {
+      if (illegal_unaligned) {
         error_message = " Unaligned CDR is not allowed in rtps_udp transport";
       }
       ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: "
@@ -3252,7 +3353,7 @@ DDS::Security::ParticipantCryptoHandle DataReaderImpl::get_crypto_handle() const
 void DataReaderImpl::transport_discovery_change()
 {
   RcHandle<DomainParticipantImpl> participant = participant_servant_.lock();
-  populate_connection_info(participant.get());
+  populate_connection_info(participant->get_id());
   const TransportLocatorSeq& trans_conf_info = connection_info();
   const GUID_t dp_id_copy = dp_id_;
   Discovery_rch disco = TheServiceParticipant->get_discovery(domain_id_);

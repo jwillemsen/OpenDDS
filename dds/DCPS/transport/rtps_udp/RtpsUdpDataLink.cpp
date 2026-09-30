@@ -78,7 +78,7 @@ RtpsUdpDataLink::RtpsUdpDataLink(const RtpsUdpTransport_rch& transport,
              false,     // is_loopback
              false)     // is_active
   , reactor_task_(reactor_task)
-  , job_queue_(make_rch<JobQueue>(reactor_task->get_reactor()))
+  , job_queue_(make_rch<JobQueue>(transport->event_dispatcher()))
   , event_dispatcher_(transport->event_dispatcher())
   , mb_allocator_(TheServiceParticipant->association_chunk_multiplier())
   , db_allocator_(TheServiceParticipant->association_chunk_multiplier())
@@ -99,6 +99,7 @@ RtpsUdpDataLink::RtpsUdpDataLink(const RtpsUdpTransport_rch& transport,
   , ice_agent_(ICE::Agent::instance())
 #endif
   , network_interface_address_reader_(make_rch<InternalDataReader<NetworkInterfaceAddress> >(DCPS::DataReaderQosBuilder().reliability_reliable().durability_transient_local(), rchandle_from(this)))
+  , network_interface_updates_event_(DCPS::make_rch<DCPS::ReactorEvent>(reactor_task->get_reactor(), DCPS::make_rch<DCPS::PmfEvent<RtpsUdpDataLink> >(rchandle_from(this), &RtpsUdpDataLink::handle_network_interface_updates)))
 {
 #if OPENDDS_CONFIG_SECURITY
   const GUID_t guid = make_id(local_prefix, ENTITYID_PARTICIPANT);
@@ -319,7 +320,8 @@ RtpsUdpDataLink::open(const ACE_SOCK_Dgram& unicast_socket
   }
 
   if (cfg->use_multicast()) {
-    if (!set_socket_multicast_ttl(unicast_socket_, cfg->ttl())) {
+    if (unicast_socket_.get_handle() != ACE_INVALID_HANDLE &&
+        !set_socket_multicast_ttl(unicast_socket_, cfg->ttl())) {
       if (DCPS_debug_level > 0) {
         ACE_ERROR((LM_ERROR,
                    ACE_TEXT("(%P|%t) ERROR: ")
@@ -330,7 +332,8 @@ RtpsUdpDataLink::open(const ACE_SOCK_Dgram& unicast_socket
       return false;
     }
 #ifdef ACE_HAS_IPV6
-    if (!set_socket_multicast_ttl(ipv6_unicast_socket_, cfg->ttl())) {
+    if (ipv6_unicast_socket_.get_handle() != ACE_INVALID_HANDLE &&
+        !set_socket_multicast_ttl(ipv6_unicast_socket_, cfg->ttl())) {
       if (DCPS_debug_level > 0) {
         ACE_ERROR((LM_ERROR,
                    ACE_TEXT("(%P|%t) ERROR: ")
@@ -345,7 +348,7 @@ RtpsUdpDataLink::open(const ACE_SOCK_Dgram& unicast_socket
 
   if (cfg->send_buffer_size() > 0) {
     int snd_size = cfg->send_buffer_size();
-    if (unicast_socket_.set_option(SOL_SOCKET,
+    if (unicast_socket_.get_handle() != ACE_INVALID_HANDLE && unicast_socket_.set_option(SOL_SOCKET,
                                 SO_SNDBUF,
                                 &snd_size,
                                 sizeof(snd_size)) < 0
@@ -359,7 +362,8 @@ RtpsUdpDataLink::open(const ACE_SOCK_Dgram& unicast_socket
       return false;
     }
 #ifdef ACE_HAS_IPV6
-    if (ipv6_unicast_socket_.set_option(SOL_SOCKET,
+    if (ipv6_unicast_socket_.get_handle() != ACE_INVALID_HANDLE &&
+        ipv6_unicast_socket_.set_option(SOL_SOCKET,
                                         SO_SNDBUF,
                                         (void *) &snd_size,
                                         sizeof(snd_size)) < 0
@@ -377,7 +381,7 @@ RtpsUdpDataLink::open(const ACE_SOCK_Dgram& unicast_socket
 
   if (cfg->rcv_buffer_size() > 0) {
     int rcv_size = cfg->rcv_buffer_size();
-    if (unicast_socket_.set_option(SOL_SOCKET,
+    if (unicast_socket_.get_handle() != ACE_INVALID_HANDLE && unicast_socket_.set_option(SOL_SOCKET,
                                 SO_RCVBUF,
                                 &rcv_size,
                                 sizeof(int)) < 0
@@ -391,7 +395,8 @@ RtpsUdpDataLink::open(const ACE_SOCK_Dgram& unicast_socket
       return false;
     }
 #ifdef ACE_HAS_IPV6
-    if (ipv6_unicast_socket_.set_option(SOL_SOCKET,
+    if (ipv6_unicast_socket_.get_handle() != ACE_INVALID_HANDLE &&
+        ipv6_unicast_socket_.set_option(SOL_SOCKET,
                                         SO_RCVBUF,
                                         (void *) &rcv_size,
                                         sizeof(int)) < 0
@@ -427,27 +432,49 @@ RtpsUdpDataLink::open(const ACE_SOCK_Dgram& unicast_socket
 
 void RtpsUdpDataLink::on_data_available(RcHandle<InternalDataReader<NetworkInterfaceAddress> >)
 {
+  const RtpsUdpTransport_rch tport = transport();
+  if (!tport || tport->is_shut_down()) {
+    return;
+  }
+
+  event_dispatcher_->dispatch(network_interface_updates_event_);
+}
+
+void RtpsUdpDataLink::handle_network_interface_updates()
+{
+  const RtpsUdpTransport_rch tport = transport();
+  if (!tport || tport->is_shut_down()) {
+    return;
+  }
+
+  const RcHandle<InternalDataReader<NetworkInterfaceAddress> > reader = network_interface_address_reader_;
+  if (!reader) {
+    return;
+  }
+
   InternalDataReader<NetworkInterfaceAddress>::SampleSequence samples;
   InternalSampleInfoSequence infos;
 
-  network_interface_address_reader_->take(samples, infos, DDS::LENGTH_UNLIMITED, DDS::ANY_SAMPLE_STATE, DDS::ANY_VIEW_STATE, DDS::ANY_INSTANCE_STATE);
+  reader->take(samples, infos, DDS::LENGTH_UNLIMITED, DDS::ANY_SAMPLE_STATE, DDS::ANY_VIEW_STATE, DDS::ANY_INSTANCE_STATE);
 
   RtpsUdpInst_rch cfg = config();
   if (!cfg || !cfg->use_multicast()) {
     return;
   }
 
-  RtpsUdpTransport_rch tport = transport();
-
   multicast_manager_.process(samples,
                              infos,
                              cfg->multicast_interface(),
                              get_reactor(),
                              receive_strategy().in(),
-                             cfg->multicast_group_address(tport->domain()),
+                             use_ipv4(cfg->address_family()) ?
+                               cfg->multicast_group_address(tport->domain()) :
+                               NetworkAddress::default_IPV4,
                              multicast_socket_
 #ifdef ACE_HAS_IPV6
-                             , cfg->ipv6_multicast_group_address(tport->domain()),
+                             , use_ipv6(cfg->address_family()) ?
+                               cfg->ipv6_multicast_group_address(tport->domain()) :
+                               NetworkAddress::default_IPV6,
                              ipv6_multicast_socket_
 #endif
                              );
@@ -494,6 +521,9 @@ RtpsUdpDataLink::update_locators(const GUID_t& remote_id,
 
   remove_locator_and_bundling_cache(remote_id);
 
+  NetworkAddressSet unicast_addresses_backup;
+  NetworkAddressSet multicast_addresses_backup;
+
   ACE_GUARD(ACE_Thread_Mutex, g, locators_lock_);
 
   RemoteInfo* info = 0;
@@ -515,7 +545,13 @@ RtpsUdpDataLink::update_locators(const GUID_t& remote_id,
   const bool log_change = DCPS_debug_level >= 4;
   const bool log_unicast_change = log_change && info->unicast_addrs_ != unicast_addresses;
   const bool log_multicast_change = log_change && info->multicast_addrs_ != multicast_addresses;
+  if (log_unicast_change) {
+    unicast_addresses_backup = unicast_addresses;
+  }
   info->unicast_addrs_.swap(unicast_addresses);
+  if (log_multicast_change) {
+    multicast_addresses_backup = multicast_addresses;
+  }
   info->multicast_addrs_.swap(multicast_addresses);
   info->requires_inline_qos_ = requires_inline_qos;
   if (add_ref) {
@@ -527,12 +563,22 @@ RtpsUdpDataLink::update_locators(const GUID_t& remote_id,
   if (log_unicast_change) {
     for (NetworkAddressSet::const_iterator pos = unicast_addresses.begin(), limit = unicast_addresses.end();
          pos != limit; ++pos) {
+      ACE_DEBUG((LM_INFO, ACE_TEXT("(%P|%t) RtpsUdpDataLink::update_locators %C was previously at %C\n"),
+                 LogGuid(remote_id).c_str(), LogAddr(*pos).c_str()));
+    }
+    for (NetworkAddressSet::const_iterator pos = unicast_addresses_backup.begin(), limit = unicast_addresses_backup.end();
+         pos != limit; ++pos) {
       ACE_DEBUG((LM_INFO, ACE_TEXT("(%P|%t) RtpsUdpDataLink::update_locators %C is now at %C\n"),
                  LogGuid(remote_id).c_str(), LogAddr(*pos).c_str()));
     }
   }
   if (log_multicast_change) {
     for (NetworkAddressSet::const_iterator pos = multicast_addresses.begin(), limit = multicast_addresses.end();
+         pos != limit; ++pos) {
+      ACE_DEBUG((LM_INFO, ACE_TEXT("(%P|%t) RtpsUdpDataLink::update_locators %C was previously at %C\n"),
+                 LogGuid(remote_id).c_str(), LogAddr(*pos).c_str()));
+    }
+    for (NetworkAddressSet::const_iterator pos = multicast_addresses_backup.begin(), limit = multicast_addresses_backup.end();
          pos != limit; ++pos) {
       ACE_DEBUG((LM_INFO, ACE_TEXT("(%P|%t) RtpsUdpDataLink::update_locators %C is now at %C\n"),
                  LogGuid(remote_id).c_str(), LogAddr(*pos).c_str()));
@@ -979,6 +1025,10 @@ RtpsUdpDataLink::release_reservations_i(const GUID_t& remote_id,
 void
 RtpsUdpDataLink::stop_i()
 {
+  InternalDataReaderListener<NetworkInterfaceAddress>::job_queue(JobQueue_rch());
+  if (network_interface_updates_event_) {
+    network_interface_updates_event_->disable();
+  }
   TheServiceParticipant->network_interface_address_topic()->disconnect(network_interface_address_reader_);
 
   heartbeat_->disable();
@@ -4953,20 +5003,31 @@ void RtpsUdpDataLink::fill_stats(StatisticSeq& stats, DDS::UInt32& idx) const
 {
   DataLink::fill_stats(stats, idx);
   stats[idx++].value = job_queue_ ? job_queue_->size() : 0;
-  stats[idx++].value = locators_.size();
+  {
+    ACE_GUARD(ACE_Thread_Mutex, g, locators_lock_);
+    stats[idx++].value = locators_.size();
+  }
   stats[idx++].value = locator_cache_.size();
   stats[idx++].value = bundling_cache_.size();
   stats[idx++].value = mb_allocator_.bytes_heap_allocated();
   stats[idx++].value = db_allocator_.bytes_heap_allocated();
-  stats[idx++].value = writers_.size();
-  const std::pair<size_t, size_t> local_writer_stats = local_reliable_writer_stats();
-  stats[idx++].value = local_writer_stats.first;
-  stats[idx++].value = local_writer_stats.second;
-  stats[idx++].value = pending_reliable_readers_.size();
-  stats[idx++].value = readers_.size();
-  stats[idx++].value = total_remote_reliable_writers();
-  stats[idx++].value = readers_of_writer_.size();
-  stats[idx++].value = writer_to_seq_best_effort_readers_.size();
+
+  // writer side stats (needs writers_lock_)
+  size_t local_writer_count, remote_reliable_reader_count, aggregate_reader_buffer_size;
+  local_reliable_writer_stats(local_writer_count, remote_reliable_reader_count, aggregate_reader_buffer_size);
+  stats[idx++].value = local_writer_count;
+  stats[idx++].value = remote_reliable_reader_count;
+  stats[idx++].value = aggregate_reader_buffer_size;
+
+  // reader side stats (needs readers_lock_)
+  size_t local_reader_count, remote_reliable_writer_count, pending_reliable_readers_count, readers_of_writer_count, writer_to_seq_best_effort_readers_count;
+  local_reliable_reader_stats(local_reader_count, remote_reliable_writer_count, pending_reliable_readers_count, readers_of_writer_count, writer_to_seq_best_effort_readers_count);
+  stats[idx++].value = pending_reliable_readers_count;
+  stats[idx++].value = local_reader_count;
+  stats[idx++].value = remote_reliable_writer_count;
+  stats[idx++].value = readers_of_writer_count;
+  stats[idx++].value = writer_to_seq_best_effort_readers_count;
+
   stats[idx++].value = sq_.size();
   {
     ACE_Guard<ACE_Thread_Mutex> fsq_guard(fsq_mutex_);
@@ -4982,32 +5043,39 @@ void RtpsUdpDataLink::fill_stats(StatisticSeq& stats, DDS::UInt32& idx) const
   }
 }
 
-size_t RtpsUdpDataLink::total_remote_reliable_writers() const
+void RtpsUdpDataLink::local_reliable_reader_stats(size_t& local_reader_count, size_t& remote_reliable_writer_count, size_t& pending_reliable_readers_count, size_t& readers_of_writer_count, size_t& writer_to_seq_best_effort_readers_count) const
 {
+  remote_reliable_writer_count = 0;
+
   ACE_Guard<ACE_Thread_Mutex> guard(readers_lock_);
-  size_t writers = 0;
+
+  local_reader_count = readers_.size();
+  pending_reliable_readers_count = pending_reliable_readers_.size();
+  readers_of_writer_count = readers_of_writer_.size();
+  writer_to_seq_best_effort_readers_count = writer_to_seq_best_effort_readers_.size();
+
   for (RtpsReaderMap::const_iterator iter = readers_.begin(); iter != readers_.end(); ++iter) {
-    writers += iter->second->writer_count();
+    remote_reliable_writer_count += iter->second->writer_count();
   }
-  return writers;
 }
 
-std::pair<size_t, size_t> RtpsUdpDataLink::local_reliable_writer_stats() const
+void RtpsUdpDataLink::local_reliable_writer_stats(size_t& local_writer_count, size_t& remote_reliable_reader_count, size_t& aggregate_reader_buffer_size) const
 {
+  remote_reliable_reader_count = 0;
+  aggregate_reader_buffer_size = 0;
+
   ACE_Guard<ACE_Thread_Mutex> guard(writers_lock_);
   const RtpsWriterMap writers(writers_);
   guard.release();
 
-  size_t readers = 0;
-  size_t buffer_size = 0;
+  local_writer_count = writers.size();
   for (RtpsWriterMap::const_iterator iter = writers.begin(); iter != writers.end(); ++iter) {
-    readers += iter->second->reader_count();
+    remote_reliable_reader_count += iter->second->reader_count();
     const RcHandle<SingleSendBuffer> sb = iter->second->get_send_buff();
     if (sb) {
-      buffer_size += sb->size();
+      aggregate_reader_buffer_size += sb->size();
     }
   }
-  return std::make_pair(readers, buffer_size);
 }
 
 
