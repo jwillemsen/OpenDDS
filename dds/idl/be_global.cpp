@@ -603,38 +603,92 @@ namespace {
     return make_pair(base_name + suffix, "");
   }
 
+  bool is_absolute_path(const string& path)
+  {
+    return (path.size() && (path[0] == '/' || path[0] == '\\')) ||
+      (path.size() > 2 && path[1] == ':' && (path[2] == '/' || path[2] == '\\'));
+  }
+
+  // Use '/' separators and remove "." and ".." segments from an absolute path
+  string normalize_path(const string& path)
+  {
+    string p(path);
+    std::replace(p.begin(), p.end(), '\\', '/');
+    const size_t root_len = p.size() > 1 && p[1] == ':' ? 3 : 1;
+    vector<string> segments;
+    size_t pos = root_len;
+    while (pos <= p.size()) {
+      const size_t end = (std::min)(p.find('/', pos), p.size());
+      const string segment = p.substr(pos, end - pos);
+      if (segment == "..") {
+        if (!segments.empty()) {
+          segments.pop_back();
+        }
+      } else if (!segment.empty() && segment != ".") {
+        segments.push_back(segment);
+      }
+      pos = end + 1;
+    }
+
+    string result = p.substr(0, root_len);
+    for (size_t i = 0; i < segments.size(); ++i) {
+      result += (i ? "/" : "") + segments[i];
+    }
+    return result;
+  }
+
+  bool starts_with_dir(const string& path, const string& dir)
+  {
+    if (dir.empty() || path.size() <= dir.size() ||
+#ifdef ACE_WIN32
+        ACE_OS::strncasecmp(path.c_str(), dir.c_str(), dir.size()) != 0
+#else
+        path.compare(0, dir.size(), dir) != 0
+#endif
+        ) {
+      return false;
+    }
+    return dir[dir.size() - 1] == '/' || path[dir.size()] == '/';
+  }
+
+  // Path of an included IDL file relative to the include path it was found in
   string make_relative(const string& absolute, bool filename_only_includes)
   {
+    string rel = absolute;
+    bool found = false;
     for (vector<string>::reverse_iterator iter = inc_path_vector.rbegin(),
-        end = inc_path_vector.rend(); iter != end; ++iter) {
+        end = inc_path_vector.rend(); iter != end && !found; ++iter) {
       if (absolute.find(*iter) == 0) {
-        string rel = absolute.substr(iter->size());
-
-        if (rel.size() && (rel[0] == '/' || rel[0] == '\\')) {
-          rel.erase(0, 1);
-        }
-
-        if (filename_only_includes) {
-          size_t loc = rel.rfind('/', rel.length());
-          const size_t locw = rel.rfind('\\', rel.length());
-
-          if (loc != string::npos && locw != string::npos) {
-            // path may contain both '/' and '\'. choose the last one.
-            loc = loc > locw ? loc : locw;
-          } else if (loc == string::npos) {
-            loc = locw;
-          }
-
-          if (loc != string::npos) {
-            rel = rel.substr(loc + 1, rel.length() - loc);
-          }
-        }
-
-        return rel;
+        rel = absolute.substr(iter->size());
+        found = true;
       }
     }
 
-    return absolute;
+    // The preprocessor can spell an absolute path differently than the include path
+    if (!found && is_absolute_path(absolute)) {
+      const string path = normalize_path(absolute);
+      for (vector<string>::reverse_iterator iter = inc_path_vector.rbegin(),
+          end = inc_path_vector.rend(); iter != end && !found; ++iter) {
+        const string dir = is_absolute_path(*iter) ? normalize_path(*iter) : "";
+        if (starts_with_dir(path, dir)) {
+          rel = path.substr(dir.size());
+          found = true;
+        }
+      }
+    }
+
+    if (found && rel.size() && (rel[0] == '/' || rel[0] == '\\')) {
+      rel.erase(0, 1);
+    }
+
+    if (filename_only_includes) {
+      const size_t loc = rel.find_last_of("/\\");
+      if (loc != string::npos) {
+        rel.erase(0, loc + 1);
+      }
+    }
+
+    return rel;
   }
 
   struct InsertIncludes {
@@ -710,7 +764,7 @@ bool BE_GlobalData::is_nested(AST_Decl* node)
 {
   {
     // @topic overrides @nested and @default_nested.
-    TopicAnnotation* topic = dynamic_cast<TopicAnnotation*>(builtin_annotations_["::@topic"]);
+    TopicAnnotation* topic = builtin_annotations_.get<TopicAnnotation>();
     TopicValue value;
     if (topic->node_value_exists(node, value)) {
       if (platforms_.count(value.platform)) {
@@ -719,8 +773,7 @@ bool BE_GlobalData::is_nested(AST_Decl* node)
     }
   }
 
-  NestedAnnotation* nested = dynamic_cast<NestedAnnotation*>(
-    builtin_annotations_["::@nested"]);
+  NestedAnnotation* nested = builtin_annotations_.get<NestedAnnotation>();
   bool value;
   if (nested->node_value_exists(node, value)) {
     return value;
@@ -732,8 +785,7 @@ bool BE_GlobalData::is_nested(AST_Decl* node)
 bool BE_GlobalData::is_default_nested(UTL_Scope* scope)
 {
   AST_Decl* module = dynamic_cast<AST_Decl*>(scope);
-  DefaultNestedAnnotation* default_nested = dynamic_cast<DefaultNestedAnnotation*>(
-    builtin_annotations_["::@default_nested"]);
+  DefaultNestedAnnotation* default_nested = builtin_annotations_.get<DefaultNestedAnnotation>();
   if (module) {
     bool value;
     if (default_nested->node_value_exists(module, value)) {
@@ -748,14 +800,14 @@ bool BE_GlobalData::is_default_nested(UTL_Scope* scope)
 
 bool BE_GlobalData::check_key(AST_Decl* node, bool& value) const
 {
-  KeyAnnotation* key = dynamic_cast<KeyAnnotation*>(builtin_annotations_["::@key"]);
+  KeyAnnotation* key = builtin_annotations_.get<KeyAnnotation>();
   value = key->absent_value;
   return key->node_value_exists(node, value);
 }
 
 bool BE_GlobalData::union_discriminator_is_key(AST_Union* node)
 {
-  KeyAnnotation* key = dynamic_cast<KeyAnnotation*>(builtin_annotations_["::@key"]);
+  KeyAnnotation* key = builtin_annotations_.get<KeyAnnotation>();
   return key->union_value(node);
 }
 
@@ -799,21 +851,20 @@ ExtensibilityKind BE_GlobalData::extensibility(AST_Decl* node, ExtensibilityKind
 {
   has_annotation = true;
 
-  if (builtin_annotations_["::@final"]->find_on(node)) {
+  if (builtin_annotations_.get<FinalAnnotation>()->find_on(node)) {
     return extensibilitykind_final;
   }
 
-  if (builtin_annotations_["::@appendable"]->find_on(node)) {
+  if (builtin_annotations_.get<AppendableAnnotation>()->find_on(node)) {
     return extensibilitykind_appendable;
   }
 
-  if (builtin_annotations_["::@mutable"]->find_on(node)) {
+  if (builtin_annotations_.get<MutableAnnotation>()->find_on(node)) {
     return extensibilitykind_mutable;
   }
 
   ExtensibilityAnnotation* extensibility_annotation =
-    dynamic_cast<ExtensibilityAnnotation*>(
-      builtin_annotations_["::@extensibility"]);
+    builtin_annotations_.get<ExtensibilityAnnotation>();
   ExtensibilityKind value;
   if (!extensibility_annotation->node_value_exists(node, value)) {
     value = default_extensibility;
@@ -824,21 +875,20 @@ ExtensibilityKind BE_GlobalData::extensibility(AST_Decl* node, ExtensibilityKind
 
 ExtensibilityKind BE_GlobalData::extensibility(AST_Decl* node, ExtensibilityKind default_extensibility) const
 {
-  if (builtin_annotations_["::@final"]->find_on(node)) {
+  if (builtin_annotations_.get<FinalAnnotation>()->find_on(node)) {
     return extensibilitykind_final;
   }
 
-  if (builtin_annotations_["::@appendable"]->find_on(node)) {
+  if (builtin_annotations_.get<AppendableAnnotation>()->find_on(node)) {
     return extensibilitykind_appendable;
   }
 
-  if (builtin_annotations_["::@mutable"]->find_on(node)) {
+  if (builtin_annotations_.get<MutableAnnotation>()->find_on(node)) {
     return extensibilitykind_mutable;
   }
 
   ExtensibilityAnnotation* extensibility_annotation =
-    dynamic_cast<ExtensibilityAnnotation*>(
-      builtin_annotations_["::@extensibility"]);
+    builtin_annotations_.get<ExtensibilityAnnotation>();
   ExtensibilityKind value;
   if (!extensibility_annotation->node_value_exists(node, value)) {
     value = default_extensibility;
@@ -853,8 +903,7 @@ ExtensibilityKind BE_GlobalData::extensibility(AST_Decl* node) const
 
 AutoidKind BE_GlobalData::autoid(AST_Decl* node) const
 {
-  AutoidAnnotation* autoid_annotation = dynamic_cast<AutoidAnnotation*>(
-    builtin_annotations_["::@autoid"]);
+  AutoidAnnotation* autoid_annotation = builtin_annotations_.get<AutoidAnnotation>();
   AutoidKind value;
   if (autoid_annotation->node_value_exists(node, value)) {
     return value;
@@ -865,8 +914,7 @@ AutoidKind BE_GlobalData::autoid(AST_Decl* node) const
 AutoidKind BE_GlobalData::scoped_autoid(UTL_Scope* scope) const
 {
   AST_Decl* module = dynamic_cast<AST_Decl*>(scope);
-  AutoidAnnotation* autoid_annotation = dynamic_cast<AutoidAnnotation*>(
-    builtin_annotations_["::@autoid"]);
+  AutoidAnnotation* autoid_annotation = builtin_annotations_.get<AutoidAnnotation>();
   if (module) {
     AutoidKind value;
     if (autoid_annotation->node_value_exists(module, value)) {
@@ -879,23 +927,19 @@ AutoidKind BE_GlobalData::scoped_autoid(UTL_Scope* scope) const
 
 bool BE_GlobalData::id(AST_Decl* node, ACE_CDR::ULong& value) const
 {
-  IdAnnotation* id_annotation =
-    dynamic_cast<IdAnnotation*>(builtin_annotations_["::@id"]);
+  IdAnnotation* id_annotation = builtin_annotations_.get<IdAnnotation>();
   return id_annotation->node_value_exists(node, value);
 }
 
 bool BE_GlobalData::hashid(AST_Decl* node, string& value) const
 {
-  HashidAnnotation* hashid_annotation =
-    dynamic_cast<HashidAnnotation*>(builtin_annotations_["::@hashid"]);
+  HashidAnnotation* hashid_annotation = builtin_annotations_.get<HashidAnnotation>();
   return hashid_annotation->node_value_exists(node, value);
 }
 
 bool BE_GlobalData::is_optional(AST_Decl* node) const
 {
-  OptionalAnnotation* optional_annotation =
-    dynamic_cast<OptionalAnnotation*>(
-      builtin_annotations_["::@optional"]);
+  OptionalAnnotation* optional_annotation = builtin_annotations_.get<OptionalAnnotation>();
   bool value = optional_annotation->absent_value;
   optional_annotation->node_value_exists(node, value);
   return value;
@@ -904,8 +948,7 @@ bool BE_GlobalData::is_optional(AST_Decl* node) const
 bool BE_GlobalData::is_must_understand(AST_Decl* node) const
 {
   MustUnderstandAnnotation* must_understand_annotation =
-    dynamic_cast<MustUnderstandAnnotation*>(
-      builtin_annotations_["::@must_understand"]);
+    builtin_annotations_.get<MustUnderstandAnnotation>();
   bool value = must_understand_annotation->absent_value;
   must_understand_annotation->node_value_exists(node, value);
   return value;
@@ -925,9 +968,7 @@ bool BE_GlobalData::is_key(AST_Decl* node) const
 
 bool BE_GlobalData::is_external(AST_Decl* node) const
 {
-  ExternalAnnotation* external_annotation =
-    dynamic_cast<ExternalAnnotation*>(
-      builtin_annotations_["::@external"]);
+  ExternalAnnotation* external_annotation = builtin_annotations_.get<ExternalAnnotation>();
   bool value = external_annotation->absent_value;
   external_annotation->node_value_exists(node, value);
   return value;
@@ -935,12 +976,9 @@ bool BE_GlobalData::is_external(AST_Decl* node) const
 
 bool BE_GlobalData::is_plain(AST_Decl* node) const
 {
-  ExternalAnnotation* external_annotation =
-    dynamic_cast<ExternalAnnotation*>(
-      builtin_annotations_["::@external"]);
+  ExternalAnnotation* external_annotation = builtin_annotations_.get<ExternalAnnotation>();
   TryConstructAnnotation* try_construct_annotation =
-    dynamic_cast<TryConstructAnnotation*>(
-      builtin_annotations_["::@try_construct"]);
+    builtin_annotations_.get<TryConstructAnnotation>();
 
   for (AST_Annotation_Appls::iterator i = node->annotations().begin();
        i != node->annotations().end(); ++i) {
@@ -958,8 +996,7 @@ bool BE_GlobalData::is_plain(AST_Decl* node) const
 TryConstructFailAction BE_GlobalData::try_construct(AST_Decl* node) const
 {
   TryConstructAnnotation* try_construct_annotation =
-    dynamic_cast<TryConstructAnnotation*>(
-      builtin_annotations_["::@try_construct"]);
+    builtin_annotations_.get<TryConstructAnnotation>();
   TryConstructFailAction value;
   if (!try_construct_annotation->node_value_exists(node, value)) {
     value = default_try_construct_;
@@ -970,41 +1007,41 @@ TryConstructFailAction BE_GlobalData::try_construct(AST_Decl* node) const
 TryConstructFailAction BE_GlobalData::sequence_element_try_construct(AST_Sequence* node)
 {
   TryConstructAnnotation* try_construct_annotation =
-    dynamic_cast<TryConstructAnnotation*>(builtin_annotations_["::@try_construct"]);
+    builtin_annotations_.get<TryConstructAnnotation>();
   return try_construct_annotation->sequence_element_value(node);
 }
 
 TryConstructFailAction BE_GlobalData::array_element_try_construct(AST_Array* node)
 {
   TryConstructAnnotation* try_construct_annotation =
-    dynamic_cast<TryConstructAnnotation*>(builtin_annotations_["::@try_construct"]);
+    builtin_annotations_.get<TryConstructAnnotation>();
   return try_construct_annotation->array_element_value(node);
 }
 
 TryConstructFailAction BE_GlobalData::union_discriminator_try_construct(AST_Union* node)
 {
   TryConstructAnnotation* try_construct_annotation =
-    dynamic_cast<TryConstructAnnotation*>(builtin_annotations_["::@try_construct"]);
+    builtin_annotations_.get<TryConstructAnnotation>();
   return try_construct_annotation->union_value(node);
 }
 
 bool BE_GlobalData::value(AST_Decl* node, ACE_INT32& value) const
 {
-  ValueAnnotation* annotation = dynamic_cast<ValueAnnotation*>(builtin_annotations_["::@value"]);
+  ValueAnnotation* annotation = builtin_annotations_.get<ValueAnnotation>();
   return annotation->node_value_exists(node, value);
 }
 
 TryConstructFailAction BE_GlobalData::map_key_try_construct(AST_Map* node)
 {
   TryConstructAnnotation* try_construct_annotation =
-    dynamic_cast<TryConstructAnnotation*>(builtin_annotations_["::@try_construct"]);
+    builtin_annotations_.get<TryConstructAnnotation>();
   return try_construct_annotation->map_key(node);
 }
 
 TryConstructFailAction BE_GlobalData::map_value_try_construct(AST_Map* node)
 {
   TryConstructAnnotation* try_construct_annotation =
-    dynamic_cast<TryConstructAnnotation*>(builtin_annotations_["::@try_construct"]);
+    builtin_annotations_.get<TryConstructAnnotation>();
   return try_construct_annotation->map_value(node);
 }
 
@@ -1013,8 +1050,7 @@ OpenDDS::DataRepresentation BE_GlobalData::data_representations(
 {
   using namespace OpenDDS;
   DataRepresentationAnnotation* data_representation_annotation =
-    dynamic_cast<DataRepresentationAnnotation*>(
-      builtin_annotations_["::OpenDDS::@data_representation"]);
+    builtin_annotations_.get<DataRepresentationAnnotation>();
   DataRepresentation value;
   if (!data_representation_annotation->node_value_exists(node, value)) {
     value = default_data_representation_;
@@ -1084,14 +1120,13 @@ OpenDDS::XTypes::MemberId BE_GlobalData::get_id(AST_Field* field)
 
 bool BE_GlobalData::dynamic_data_adapter(AST_Decl* node) const
 {
-  return !builtin_annotations_["::OpenDDS::internal::@no_dynamic_data_adapter"]->find_on(node);
+  return !builtin_annotations_.get<OpenDDS::internal::NoDynamicDataAdapterAnnotation>()->find_on(node);
 }
 
 bool BE_GlobalData::special_serialization(AST_Decl* node, std::string& template_name) const
 {
   typedef OpenDDS::internal::SpecialSerializationAnnotation Anno;
-  const Anno* const anno =
-    dynamic_cast<const Anno*>(builtin_annotations_["::OpenDDS::internal::@special_serialization"]);
+  const Anno* const anno = builtin_annotations_.get<Anno>();
   if (!anno->node_value_exists(node, template_name)) {
     return false;
   }
@@ -1099,4 +1134,11 @@ bool BE_GlobalData::special_serialization(AST_Decl* node, std::string& template_
     template_name = canonical_name(node->local_name());
   }
   return true;
+}
+
+bool BE_GlobalData::no_init_before_deserialize(AST_Decl* node) const
+{
+  typedef OpenDDS::NoInitBeforeDeserializeAnnotation Anno;
+  const Anno* const anno = builtin_annotations_.get<Anno>();
+  return anno->find_on(node);
 }

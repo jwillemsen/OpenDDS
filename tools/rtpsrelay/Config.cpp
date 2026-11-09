@@ -41,10 +41,23 @@ bool Config::from_arg(ACE_Arg_Shifter_T<char>& args)
     log_thread_status(ACE_OS::atoi(arg));
     args.consume_arg();
   } else if ((arg = args.get_the_parameter("-ThreadStatusSafetyFactor"))) {
-    thread_status_safety_factor(ACE_OS::atoi(arg));
+    const auto val = ACE_OS::atoi(arg);
+    if (val <= 0) {
+      ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: Argument for -ThreadStatusSafetyFactor option must be positive: %d\n", val));
+      return false;
+    }
+    thread_status_safety_factor(val);
     args.consume_arg();
   } else if ((arg = args.get_the_parameter("-UtilizationLimit"))) {
     utilization_limit(ACE_OS::atof(arg));
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-UtilizationLimitTolerance"))) {
+    const auto val = ACE_OS::atoi(arg);
+    if (val < 0) {
+      ACE_ERROR((LM_ERROR, "(%P|%t) ERROR: Argument for -UtilizationLimitTolerance option must be non-negative: %d\n", val));
+      return false;
+    }
+    utilization_limit_tolerance(val);
     args.consume_arg();
   } else if ((arg = args.get_the_parameter("-LogUtilizationChanges"))) {
     log_utilization_changes(ACE_OS::atoi(arg));
@@ -104,6 +117,27 @@ bool Config::from_arg(ACE_Arg_Shifter_T<char>& args)
     args.consume_arg();
   } else if ((arg = args.get_the_parameter("-DeniedPartitionsTimeout"))) {
     denied_partitions_timeout(OpenDDS::DCPS::TimeDuration(ACE_OS::atoi(arg)));
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-CertificateIdPattern"))) {
+    certificate_id_pattern(arg);
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-LogAsyncDiscovery"))) {
+    log_async_discovery(ACE_OS::atoi(arg));
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-SynchronizeAsyncDiscoveryCache"))) {
+    synchronize_async_discovery_cache(ACE_OS::atoi(arg));
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-AsyncDiscoveryCacheTimeout"))) {
+    async_discovery_cache_timeout(OpenDDS::DCPS::TimeDuration(ACE_OS::atoi(arg)));
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-AsyncDiscoveryRemoteCacheTimeout"))) {
+    async_discovery_remote_cache_timeout(OpenDDS::DCPS::TimeDuration(ACE_OS::atoi(arg)));
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-AsyncDiscoveryCrossRelayTimeout"))) {
+    async_discovery_cross_relay_timeout(OpenDDS::DCPS::TimeDuration(ACE_OS::atoi(arg)));
+    args.consume_arg();
+  } else if ((arg = args.get_the_parameter("-EarlyAdmissionQueueFreeup"))) {
+    early_admission_queue_freeup(ACE_OS::atoi(arg));
     args.consume_arg();
   } else {
     return false;
@@ -168,6 +202,9 @@ void Config::set_defaults()
   cached_utilization_limit_.default_if_empty([&](double default_val) {
     TheServiceParticipant->config_store()->set_float64(RTPS_RELAY_UTILIZATION_LIMIT, default_val);
   });
+  cached_utilization_limit_tolerance_.default_if_empty([&](int default_val) {
+    TheServiceParticipant->config_store()->set_int32(RTPS_RELAY_UTILIZATION_LIMIT_TOLERANCE, default_val);
+  });
   cached_log_utilization_changes_.default_if_empty([&](bool default_val) {
     TheServiceParticipant->config_store()->set_boolean(RTPS_RELAY_LOG_UTILIZATION_CHANGES, default_val);
   });
@@ -213,6 +250,24 @@ void Config::set_defaults()
   cached_denied_partitions_timeout_.default_if_empty([&](const TimeDuration& default_val) {
     TheServiceParticipant->config_store()->set_duration(RTPS_RELAY_DENIED_PARTITIONS_TIMEOUT, default_val.to_dds_duration());
   });
+  cached_async_discovery_cache_timeout_.default_if_empty([&](const TimeDuration& default_val) {
+    TheServiceParticipant->config_store()->set_duration(RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT, default_val.to_dds_duration());
+  });
+  cached_log_async_discovery_.default_if_empty([&](bool default_val) {
+    TheServiceParticipant->config_store()->set_boolean(RTPS_RELAY_LOG_ASYNC_DISCOVERY, default_val);
+  });
+  cached_synchronize_async_discovery_cache_.default_if_empty([&](bool default_val) {
+    TheServiceParticipant->config_store()->set_boolean(RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE, default_val);
+  });
+  cached_async_discovery_remote_cache_timeout_.default_if_empty([&](const TimeDuration& default_val) {
+    TheServiceParticipant->config_store()->set_duration(RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT, default_val.to_dds_duration());
+  });
+  cached_async_discovery_cross_relay_timeout_.default_if_empty([&](const TimeDuration& default_val) {
+    TheServiceParticipant->config_store()->set_duration(RTPS_RELAY_ASYNC_DISCOVERY_CROSS_RELAY_TIMEOUT, default_val.to_dds_duration());
+  });
+  cached_early_admission_queue_freeup_.default_if_empty([&](bool default_val) {
+    TheServiceParticipant->config_store()->set_boolean(RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREEUP, default_val);
+  });
 }
 
 void Config::on_data_available(InternalDataReader_rch reader)
@@ -243,6 +298,8 @@ void Config::on_data_available(InternalDataReader_rch reader)
         cached_thread_status_safety_factor_.set(pair.value());
       } else if (pair.key() == RTPS_RELAY_UTILIZATION_LIMIT) {
         cached_utilization_limit_.set(pair.value());
+      } else if (pair.key() == RTPS_RELAY_UTILIZATION_LIMIT_TOLERANCE) {
+        cached_utilization_limit_tolerance_.set(pair.value());
       } else if (pair.key() == RTPS_RELAY_LOG_UTILIZATION_CHANGES) {
         cached_log_utilization_changes_.set(pair.value());
       } else if (pair.key() == RTPS_RELAY_LOG_RELAY_STATISTICS) {
@@ -273,6 +330,18 @@ void Config::on_data_available(InternalDataReader_rch reader)
         cached_admission_max_participants_low_water_.set(pair.value());
       } else if (pair.key() == RTPS_RELAY_DENIED_PARTITIONS_TIMEOUT) {
         cached_denied_partitions_timeout_.set(pair.value());
+      } else if (pair.key() == RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT) {
+        cached_async_discovery_cache_timeout_.set(pair.value());
+      } else if (pair.key() == RTPS_RELAY_LOG_ASYNC_DISCOVERY) {
+        cached_log_async_discovery_.set(pair.value());
+      } else if (pair.key() == RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE) {
+        cached_synchronize_async_discovery_cache_.set(pair.value());
+      } else if (pair.key() == RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT) {
+        cached_async_discovery_remote_cache_timeout_.set(pair.value());
+      } else if (pair.key() == RTPS_RELAY_ASYNC_DISCOVERY_CROSS_RELAY_TIMEOUT) {
+        cached_async_discovery_cross_relay_timeout_.set(pair.value());
+      } else if (pair.key() == RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREEUP) {
+        cached_early_admission_queue_freeup_.set(pair.value());
       }
     }
   }

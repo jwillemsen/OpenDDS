@@ -887,7 +887,7 @@ RecorderImpl::enable()
     try {
       enable_transport(qos_.reliability.kind == DDS::RELIABLE_RELIABILITY_QOS,
                        qos_.durability.kind > DDS::VOLATILE_DURABILITY_QOS,
-                       participant_servant_);
+                       participant_servant_->get_id());
     } catch (const Transport::Exception&) {
       if (log_level >= LogLevel::Warning) {
         ACE_ERROR((LM_WARNING, "(%P|%t) WARNING: RecorderImpl::enable: Transport Exception\n"));
@@ -1008,13 +1008,6 @@ DDS::DynamicData_ptr RecorderImpl::get_dynamic_data(const RawDataSample& sample)
   DDS::DynamicType_var dt = dt_found->second;
   XTypes::DynamicDataXcdrReadImpl* dd = new XTypes::DynamicDataXcdrReadImpl(sample.sample_.get(), enc, dt);
   DDS::DynamicData_var dd_var = dd;
-  if (!dd->check_xcdr1_mutable(dt)) {
-    if (log_level >= LogLevel::Notice) {
-      ACE_ERROR((LM_NOTICE, "(%P|%t) NOTICE: RecorderImpl::get_dynamic_data: "
-        "Encountered unsupported combination of XCDR1 encoding and mutable extensibility.\n"));
-    }
-    return 0;
-  }
   return dd_var._retn();
 }
 #endif

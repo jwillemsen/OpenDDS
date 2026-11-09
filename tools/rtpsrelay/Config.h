@@ -61,6 +61,9 @@ const int RTPS_RELAY_THREAD_STATUS_SAFETY_FACTOR_default = 3;
 const char RTPS_RELAY_UTILIZATION_LIMIT[] = "RTPS_RELAY_UTILIZATION_LIMIT";
 const double RTPS_RELAY_UTILIZATION_LIMIT_default = .95;
 
+const char RTPS_RELAY_UTILIZATION_LIMIT_TOLERANCE[] = "RTPS_RELAY_UTILIZATION_LIMIT_TOLERANCE";
+const int RTPS_RELAY_UTILIZATION_LIMIT_TOLERANCE_default = 2;
+
 const char RTPS_RELAY_LOG_UTILIZATION_CHANGES[] = "RTPS_RELAY_LOG_UTILIZATION_CHANGES";
 const bool RTPS_RELAY_LOG_UTILIZATION_CHANGES_default = false;
 
@@ -105,6 +108,24 @@ const DDS::UInt64 RTPS_RELAY_MAX_PARTICIPANTS_LOW_WATER_default = 0;
 
 const char RTPS_RELAY_DENIED_PARTITIONS_TIMEOUT[] = "RTPS_RELAY_DENIED_PARTITIONS_TIMEOUT";
 const DDS::Duration_t RTPS_RELAY_DENIED_PARTITIONS_TIMEOUT_default = {900, 0}; // 15 minutes
+
+const char RTPS_RELAY_LOG_ASYNC_DISCOVERY[] = "RTPS_RELAY_LOG_ASYNC_DISCOVERY";
+const bool RTPS_RELAY_LOG_ASYNC_DISCOVERY_default = false;
+
+const char RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE[] = "RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE";
+const bool RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE_default = false;
+
+const char RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT[] = "RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT";
+const DDS::Duration_t RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT_default = {3600*24*7, 0}; // 7 days
+
+const char RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT[] = "RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT";
+const DDS::Duration_t RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT_default = {3600*24*30, 0}; // 30 days
+
+const char RTPS_RELAY_ASYNC_DISCOVERY_CROSS_RELAY_TIMEOUT[] = "RTPS_RELAY_ASYNC_DISCOVERY_CROSS_RELAY_TIMEOUT";
+const DDS::Duration_t RTPS_RELAY_ASYNC_DISCOVERY_CROSS_RELAY_TIMEOUT_default = {5, 0};
+
+const char RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREEUP[] = "RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREE_UP";
+const bool RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREEUP_default = false;
 
 /// Configuration values for the RtpsRelay
 ///
@@ -271,6 +292,17 @@ public:
   double utilization_limit() const
   {
     return cached_utilization_limit_.get();
+  }
+
+  void utilization_limit_tolerance(int value)
+  {
+    TheServiceParticipant->config_store()->set_int32(RTPS_RELAY_UTILIZATION_LIMIT_TOLERANCE, value);
+    cached_utilization_limit_tolerance_.set(value);
+  }
+
+  int utilization_limit_tolerance() const
+  {
+    return cached_utilization_limit_tolerance_.get();
   }
 
   void log_utilization_changes(bool value)
@@ -475,6 +507,96 @@ public:
     return cached_denied_partitions_timeout_.get();
   }
 
+  void certificate_id_pattern(const std::string& pattern)
+  {
+    certificate_id_pattern_ = pattern;
+  }
+
+  std::string certificate_id_pattern() const
+  {
+    return certificate_id_pattern_;
+  }
+
+  bool async_discovery_enabled() const
+  {
+    return !certificate_id_pattern_.empty();
+  }
+
+  void async_discovery_cache_timeout(const OpenDDS::DCPS::TimeDuration& value)
+  {
+    TheServiceParticipant->config_store()->set_duration(RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT, value.to_dds_duration());
+    cached_async_discovery_cache_timeout_.set(value);
+  }
+
+  OpenDDS::DCPS::TimeDuration async_discovery_cache_timeout() const
+  {
+    return cached_async_discovery_cache_timeout_.get();
+  }
+
+  void log_async_discovery(bool flag)
+  {
+    TheServiceParticipant->config_store()->set_boolean(RTPS_RELAY_LOG_ASYNC_DISCOVERY, flag);
+    cached_log_async_discovery_.set(flag);
+  }
+
+  bool log_async_discovery() const
+  {
+    return cached_log_async_discovery_.get();
+  }
+
+  void synchronize_async_discovery_cache(bool flag)
+  {
+    TheServiceParticipant->config_store()->set_boolean(RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE, flag);
+    cached_synchronize_async_discovery_cache_.set(flag);
+  }
+
+  bool synchronize_async_discovery_cache() const
+  {
+    return cached_synchronize_async_discovery_cache_.get();
+  }
+
+  void async_discovery_remote_cache_timeout(const OpenDDS::DCPS::TimeDuration& value)
+  {
+    TheServiceParticipant->config_store()->set_duration(RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT, value.to_dds_duration());
+    cached_async_discovery_remote_cache_timeout_.set(value);
+  }
+
+  OpenDDS::DCPS::TimeDuration async_discovery_remote_cache_timeout() const
+  {
+    return cached_async_discovery_remote_cache_timeout_.get();
+  }
+
+  void expected_ca_subject_name(const std::string& value)
+  {
+    expected_ca_subject_name_ = value;
+  }
+  const std::string& expected_ca_subject_name() const
+  {
+    return expected_ca_subject_name_;
+  }
+
+  void async_discovery_cross_relay_timeout(const OpenDDS::DCPS::TimeDuration& value)
+  {
+    TheServiceParticipant->config_store()->set_duration(RTPS_RELAY_ASYNC_DISCOVERY_CROSS_RELAY_TIMEOUT, value.to_dds_duration());
+    cached_async_discovery_cross_relay_timeout_.set(value);
+  }
+
+  OpenDDS::DCPS::TimeDuration async_discovery_cross_relay_timeout() const
+  {
+    return cached_async_discovery_cross_relay_timeout_.get();
+  }
+
+  void early_admission_queue_freeup(bool flag)
+  {
+    TheServiceParticipant->config_store()->set_boolean(RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREEUP, flag);
+    cached_early_admission_queue_freeup_.set(flag);
+  }
+
+  bool early_admission_queue_freeup() const
+  {
+    return cached_early_admission_queue_freeup_.get();
+  }
+
   static bool to_time_duration(const std::string& value, OpenDDS::DCPS::TimeDuration& out);
 
 private:
@@ -547,6 +669,7 @@ private:
   CachedValue<bool, OpenDDS::DCPS::ConfigStoreImpl::convert_value> cached_log_thread_status_{RTPS_RELAY_LOG_THREAD_STATUS_default};
   CachedValue<int, OpenDDS::DCPS::convertToInteger> cached_thread_status_safety_factor_{RTPS_RELAY_THREAD_STATUS_SAFETY_FACTOR_default};
   CachedValue<double, OpenDDS::DCPS::convertToFloating> cached_utilization_limit_{RTPS_RELAY_UTILIZATION_LIMIT_default};
+  CachedValue<int, OpenDDS::DCPS::convertToInteger> cached_utilization_limit_tolerance_{RTPS_RELAY_UTILIZATION_LIMIT_TOLERANCE_default};
   CachedValue<bool, OpenDDS::DCPS::ConfigStoreImpl::convert_value> cached_log_utilization_changes_{RTPS_RELAY_LOG_UTILIZATION_CHANGES_default};
   CachedValue<OpenDDS::DCPS::TimeDuration, to_time_duration> cached_log_relay_statistics_{OpenDDS::DCPS::TimeDuration{RTPS_RELAY_LOG_RELAY_STATISTICS_default}};
   CachedValue<OpenDDS::DCPS::TimeDuration, to_time_duration> cached_log_handler_statistics_{OpenDDS::DCPS::TimeDuration{RTPS_RELAY_LOG_HANDLER_STATISTICS_default}};
@@ -562,6 +685,12 @@ private:
   CachedValue<size_t, OpenDDS::DCPS::convertToInteger> cached_admission_max_participants_high_water_{RTPS_RELAY_MAX_PARTICIPANTS_HIGH_WATER_default};
   CachedValue<size_t, OpenDDS::DCPS::convertToInteger> cached_admission_max_participants_low_water_{RTPS_RELAY_MAX_PARTICIPANTS_LOW_WATER_default};
   CachedValue<OpenDDS::DCPS::TimeDuration, to_time_duration> cached_denied_partitions_timeout_{OpenDDS::DCPS::TimeDuration{RTPS_RELAY_DENIED_PARTITIONS_TIMEOUT_default}};
+  CachedValue<OpenDDS::DCPS::TimeDuration, to_time_duration> cached_async_discovery_cache_timeout_{OpenDDS::DCPS::TimeDuration{RTPS_RELAY_ASYNC_DISCOVERY_CACHE_TIMEOUT_default}};
+  CachedValue<bool, OpenDDS::DCPS::ConfigStoreImpl::convert_value> cached_log_async_discovery_{RTPS_RELAY_LOG_ASYNC_DISCOVERY_default};
+  CachedValue<bool, OpenDDS::DCPS::ConfigStoreImpl::convert_value> cached_synchronize_async_discovery_cache_{RTPS_RELAY_SYNCHRONIZE_ASYNC_DISCOVERY_CACHE_default};
+  CachedValue<OpenDDS::DCPS::TimeDuration, to_time_duration> cached_async_discovery_remote_cache_timeout_{OpenDDS::DCPS::TimeDuration{RTPS_RELAY_ASYNC_DISCOVERY_REMOTE_CACHE_TIMEOUT_default}};
+  CachedValue<OpenDDS::DCPS::TimeDuration, to_time_duration> cached_async_discovery_cross_relay_timeout_{OpenDDS::DCPS::TimeDuration{RTPS_RELAY_ASYNC_DISCOVERY_CROSS_RELAY_TIMEOUT_default}};
+  CachedValue<bool, OpenDDS::DCPS::ConfigStoreImpl::convert_value> cached_early_admission_queue_freeup_{RTPS_RELAY_EARLY_ADMISSION_QUEUE_FREEUP_default};
 
   // start of variables without ConfigStore support
   std::string relay_id_;
@@ -577,6 +706,12 @@ private:
   OpenDDS::DCPS::TimeDuration run_time_;
   bool synchronous_output_ = false;
   size_t handler_threads_ = 1;
+
+  // User-provided pattern, e.g., "CN=([\d]+)-.*", to extract a component from dds.cert.sn
+  // that will be used as the key into the partition cache for asynchronous discovery.
+  // Currently, the first submatch is used.
+  std::string certificate_id_pattern_;
+  std::string expected_ca_subject_name_;
   // end of variables without ConfigStore support
 };
 

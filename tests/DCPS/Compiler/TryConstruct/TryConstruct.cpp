@@ -528,9 +528,9 @@ TEST(AnonSequence, Trim)
       ssu[i] = i;
     }
     ShortSeqBound2 ssb;
-    ssu.length(3);
+    ssb.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
-      ssu[i] = i;
+      ssb[i] = i;
     }
     sent.AnonShortSeqUnboundUnbound.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
@@ -579,14 +579,14 @@ TEST(AnonSequence, Trim)
       }
     }
     ShortSeqUnbound ssu_2;
-    ssu.length(3);
-    for (ACE_INT16 i = 0; i < 2; ++i) {
-      ssu[i] = i;
+    ssu_2.length(3);
+    for (ACE_INT16 i = 0; i < 3; ++i) {
+      ssu_2[i] = i;
     }
     ShortSeqBound ssb_2;
-    ssu.length(2);
+    ssb_2.length(2);
     for (ACE_INT16 i = 0; i < 2; ++i) {
-      ssu[i] = i;
+      ssb_2[i] = i;
     }
     expected.AnonShortSeqUnboundUnbound.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
@@ -673,9 +673,9 @@ TEST(AnonSequence, USE_DEFAULT)
       ssu[i] = i;
     }
     ShortSeqBound2 ssb;
-    ssu.length(3);
+    ssb.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
-      ssu[i] = i;
+      ssb[i] = i;
     }
     sent.AnonShortSeqUnboundUnbound.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
@@ -696,7 +696,6 @@ TEST(AnonSequence, USE_DEFAULT)
 
     TryCon::AnonSeqStructDefault expected;
     expected.AnonShortSeqUnboundUnbound.length(3);
-    expected.AnonSeqShortSeqBoundUnbound.length(3);
 
     TryCon::AnonSeqStructDefault actual;
 
@@ -871,7 +870,6 @@ TEST(Union, DISCARD)
 {
   {
     TryCon::BaseUnion sent;
-    sent._d(0);
     sent.str_d("abcdefghijklmnopqrstuvwxyz");
     TryCon::DiscardUnion actual;
     {
@@ -891,7 +889,6 @@ TEST(Union, DISCARD)
 #ifndef OPENDDS_SAFETY_PROFILE
   {
     TryCon::BaseUnion sent;
-    sent._d(3);
     sent.wstr_d(L"abcdefghijklmnopqrstuvwxyz");
     TryCon::DiscardUnion actual;
     {
@@ -911,7 +908,6 @@ TEST(Union, DISCARD)
 #endif
   {
     TryCon::BaseUnion sent;
-    sent._d(6);
     str64Array temp_arr;
     temp_arr[0] = "abcdefghijklmnopqrstuvwxyz";
     sent.stra_d(temp_arr);
@@ -932,7 +928,6 @@ TEST(Union, DISCARD)
   }
   {
     TryCon::BaseUnion sent;
-    sent._d(9);
     StringSeqBound2 temp_seq;
     temp_seq.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
@@ -956,7 +951,6 @@ TEST(Union, DISCARD)
   }
   {
     TryCon::BaseUnion sent;
-    sent._d(12);
     sent.e_d(BExtra);
     TryCon::DiscardUnion actual;
     {
@@ -975,7 +969,6 @@ TEST(Union, DISCARD)
   }
   {
     TryCon::BaseDiscrimUnion sent;
-    sent._d(BExtra);
     sent.s4(5);
     TryCon::DiscardDiscrimUnion actual;
     {
@@ -998,10 +991,8 @@ TEST(Union, USE_DEFAULT)
 {
   {
     TryCon::BaseUnion sent;
-    sent._d(1);
     sent.str_ud("abcdefghijklmnopqrstuvwxyz");
     TryCon::DefaultUnion expected;
-    expected._d(1);
     expected.str_ud("");
     TryCon::DefaultUnion actual;
     {
@@ -1022,10 +1013,8 @@ TEST(Union, USE_DEFAULT)
 #ifndef OPENDDS_SAFETY_PROFILE
   {
     TryCon::BaseUnion sent;
-    sent._d(4);
     sent.wstr_ud(L"abcdefghijklmnopqrstuvwxyz");
     TryCon::DefaultUnion expected;
-    expected._d(4);
     expected.wstr_ud(L"");
     TryCon::DefaultUnion actual;
     {
@@ -1046,14 +1035,12 @@ TEST(Union, USE_DEFAULT)
 #endif
   {
     TryCon::BaseUnion sent;
-    sent._d(7);
     str64Array temp_arr;
     for (ACE_INT16 i = 0; i < 10; ++i) {
       temp_arr[i] = "abcdefghijklmnopqrstuvwxyz";
     }
     sent.stra_ud(temp_arr);
     TryCon::DefaultUnion expected;
-    expected._d(7);
     str64Array temp_arr2;
     for (ACE_INT16 i = 0; i < 3; ++i) {
       temp_arr2[i] = "";
@@ -1077,7 +1064,6 @@ TEST(Union, USE_DEFAULT)
   }
   {
     TryCon::BaseUnion sent;
-    sent._d(10);
     StringSeqBound2 temp_seq;
     temp_seq.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
@@ -1085,7 +1071,6 @@ TEST(Union, USE_DEFAULT)
     }
     sent.strs_ud(temp_seq);
     TryCon::DefaultUnion expected;
-    expected._d(10);
     StringSeqBound temp_seq2;
     expected.strs_ud(temp_seq2);
     TryCon::DefaultUnion actual;
@@ -1106,10 +1091,8 @@ TEST(Union, USE_DEFAULT)
   }
   {
     TryCon::BaseUnion sent;
-    sent._d(13);
     sent.e_ud(BExtra);
     TryCon::DefaultUnion expected;
-    expected._d(13);
     expected.e_ud(VALUE1);
     TryCon::DefaultUnion actual;
     {
@@ -1129,10 +1112,8 @@ TEST(Union, USE_DEFAULT)
   }
   {
     TryCon::BaseDiscrimUnion sent;
-    sent._d(BExtra);
     sent.s4(5);
     TryCon::DefaultDiscrimUnion expected;
-    expected._d(VALUE1);
     expected.s1(0);
     TryCon::DefaultDiscrimUnion actual;
     {
@@ -1157,10 +1138,8 @@ TEST(Union, TRIM)
 {
   {
     TryCon::BaseUnion sent;
-    sent._d(2);
     sent.str_t("abcdefghijklmnopqrstuvwxyz");
     TryCon::TrimUnion expected;
-    expected._d(2);
     expected.str_t("abcdefghijklmnopqrst");
     TryCon::TrimUnion actual;
     {
@@ -1181,10 +1160,8 @@ TEST(Union, TRIM)
 #ifndef OPENDDS_SAFETY_PROFILE
   {
     TryCon::BaseUnion sent;
-    sent._d(5);
     sent.wstr_t(L"abcdefghijklmnopqrstuvwxyz");
     TryCon::TrimUnion expected;
-    expected._d(5);
     expected.wstr_t(L"abcdefghijklmnopqrst");
     TryCon::TrimUnion actual;
     {
@@ -1205,14 +1182,12 @@ TEST(Union, TRIM)
 #endif
   {
     TryCon::BaseUnion sent;
-    sent._d(8);
     str64Array temp_arr;
     for (ACE_INT16 i = 0; i < 10; ++i) {
       temp_arr[i] = "abcdefghijklmnopqrstuvwxyz";
     }
     sent.stra_t(temp_arr);
     TryCon::TrimUnion expected;
-    expected._d(8);
     str64Array temp_arr2;
     for (ACE_INT16 i = 0; i < 3; ++i) {
       temp_arr2[i] = "abcdefghijklmnopqrst";
@@ -1236,7 +1211,6 @@ TEST(Union, TRIM)
   }
   {
     TryCon::BaseUnion sent;
-    sent._d(11);
     StringSeqBound2 temp_seq;
     temp_seq.length(3);
     for (ACE_INT16 i = 0; i < 3; ++i) {
@@ -1244,7 +1218,6 @@ TEST(Union, TRIM)
     }
     sent.strs_t(temp_seq);
     TryCon::TrimUnion expected;
-    expected._d(11);
     StringSeqBound temp_seq2;
     temp_seq2.length(2);
     for (ACE_INT16 i = 0; i < 2; ++i) {

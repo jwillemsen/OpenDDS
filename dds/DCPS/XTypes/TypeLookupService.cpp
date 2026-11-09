@@ -237,7 +237,10 @@ bool TypeLookupService::get_minimal_type_identifier(const TypeIdentifier& ct, Ty
       complete_elem_ti = *ct.map_ldefn().element_identifier;
       break;
     }
-    get_minimal_type_identifier(complete_elem_ti, minimal_elem_ti);
+    if (!get_minimal_type_identifier(complete_elem_ti, minimal_elem_ti)) {
+      mt = TypeIdentifier(TK_NONE);
+      return false;
+    }
 
     switch (mt.kind()) {
     case TI_PLAIN_SEQUENCE_SMALL:
@@ -256,7 +259,10 @@ bool TypeLookupService::get_minimal_type_identifier(const TypeIdentifier& ct, Ty
       {
         mt.map_sdefn().element_identifier = minimal_elem_ti;
         TypeIdentifier minimal_key_ti;
-        get_minimal_type_identifier(*ct.map_sdefn().key_identifier, minimal_key_ti);
+        if (!get_minimal_type_identifier(*ct.map_sdefn().key_identifier, minimal_key_ti)) {
+          mt = TypeIdentifier(TK_NONE);
+          return false;
+        }
         mt.map_sdefn().key_identifier = minimal_key_ti;
         break;
       }
@@ -264,7 +270,10 @@ bool TypeLookupService::get_minimal_type_identifier(const TypeIdentifier& ct, Ty
       {
         mt.map_ldefn().element_identifier = minimal_elem_ti;
         TypeIdentifier minimal_key_ti;
-        get_minimal_type_identifier(*ct.map_ldefn().key_identifier, minimal_key_ti);
+        if (!get_minimal_type_identifier(*ct.map_ldefn().key_identifier, minimal_key_ti)) {
+          mt = TypeIdentifier(TK_NONE);
+          return false;
+        }
         mt.map_ldefn().key_identifier = minimal_key_ti;
         break;
       }
@@ -461,6 +470,7 @@ bool TypeLookupService::complete_to_minimal_union(const CompleteUnionType& ct,
                                                   MinimalUnionType& mt) const
 {
   mt.union_flags = ct.union_flags;
+  mt.header = MinimalUnionHeader();
   mt.discriminator.common.member_flags = ct.discriminator.common.member_flags;
   if (!get_minimal_type_identifier(ct.discriminator.common.type_id,
                                    mt.discriminator.common.type_id)) {
@@ -808,6 +818,7 @@ void TypeLookupService::complete_to_dynamic_i(DynamicTypeImpl* dt,
     td->discriminator_type(disc_type);
     DDS::MemberDescriptor_var disc_md = new MemberDescriptorImpl();
     disc_md->name("discriminator");
+    handle_tryconstruct_flags(disc_md, cto.union_type.discriminator.common.member_flags);
     disc_md->is_key(cto.union_type.discriminator.common.member_flags & IS_KEY);
     disc_md->type(disc_type);
     disc_md->id(DISCRIMINATOR_ID);
@@ -1182,10 +1193,23 @@ bool TypeLookupService::extensibility(TypeFlag extensibility_mask, const TypeIde
 void TypeLookupService::remove_guid_from_dynamic_map(const DCPS::GUID_t& guid)
 {
   ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+  remove_guid_from_dynamic_map_i(guid, true);
+}
+
+void TypeLookupService::release_guid_from_dynamic_map(const DCPS::GUID_t& guid)
+{
+  ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
+  remove_guid_from_dynamic_map_i(guid, false);
+}
+
+void TypeLookupService::remove_guid_from_dynamic_map_i(const DCPS::GUID_t& guid, bool clear)
+{
   const GuidTypeMap::iterator g_found = gt_map_.find(guid);
   if (g_found != gt_map_.end()) {
-    for (DynamicTypeMap::const_iterator pos2 = g_found->second.begin(), limit2 = g_found->second.end(); pos2 != limit2; ++pos2) {
-      pos2->second->clear();
+    if (clear) {
+      for (DynamicTypeMap::const_iterator pos2 = g_found->second.begin(), limit2 = g_found->second.end(); pos2 != limit2; ++pos2) {
+        pos2->second->clear();
+      }
     }
     gt_map_.erase(g_found);
     if (DCPS::DCPS_debug_level >= 4) {

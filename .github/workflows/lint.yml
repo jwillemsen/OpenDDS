@@ -23,17 +23,17 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - name: checkout OpenDDS
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         path: ${{ env.DDS_ROOT }}
     - name: checkout ACE_TAO
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         repository: DOCGroup/ACE_TAO
         ref: ace6tao2
         path: ${{ env.DOC_ROOT }}
     - name: Install Perl Dependencies
-      uses: shogo82148/actions-setup-perl@v1
+      uses: shogo82148/actions-setup-perl@v1.44.3
       with:
         install-modules: |
           YAML

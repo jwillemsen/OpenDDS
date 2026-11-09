@@ -122,7 +122,7 @@ namespace OpenDDS {
     typedef OpenDDS::DCPS::Cached_Allocator_With_Overflow<MessageTypeMemoryBlock, ACE_Thread_Mutex>  DataAllocator;
 
     DataReaderImpl_T()
-      : filter_delayed_sample_task_(make_rch<DRISporadicTask>(TheServiceParticipant->time_source(), TheServiceParticipant->reactor_task(), rchandle_from(this), &DataReaderImpl_T::filter_delayed))
+      : filter_delayed_sample_task_(make_rch<SporadicEvent>(TheServiceParticipant->event_dispatcher(), make_rch<DRIEvent>(rchandle_from(this), &DataReaderImpl_T::filter_delayed)))
       , marshal_skip_serialize_(false)
     {
       initialize_lookup_maps();
@@ -712,6 +712,7 @@ namespace OpenDDS {
     ACE_GUARD_RETURN(ACE_Recursive_Thread_Mutex, instance_guard, instances_lock_, false);
 
     TopicDescriptionPtr<TopicImpl> topic(topic_servant_);
+    if (!topic) return false;
     TypeSupport* const ts = topic->get_type_support();
     TypeSupportImpl* const type_support = dynamic_cast<TypeSupportImpl*>(ts);
     const bool filter_has_non_key_fields = type_support ? evaluator.has_non_key_fields(*type_support) : true;
@@ -929,8 +930,9 @@ namespace OpenDDS {
       static_cast<Endianness>(sample.header_.byte_order_));
 
     if (encapsulated) {
-      EncapsulationHeader encap;
-      if (!(ser >> encap)) {
+      const EncapsulationReadStatus::Value read_status =
+        read_encapsulation_header(ser, type_support_->base_extensibility());
+      if (read_status == EncapsulationReadStatus::HeaderError) {
         if (DCPS_debug_level > 0) {
           ACE_ERROR((LM_ERROR, ACE_TEXT("(%P|%t) ERROR ")
             ACE_TEXT("%CDataReaderImpl::lookup_instance: ")
@@ -938,18 +940,18 @@ namespace OpenDDS {
             TraitsType::type_name()));
         }
         return;
-      }
-      Encoding encoding;
-      if (!to_encoding(encoding, encap, type_support_->base_extensibility())) {
+      } else if (read_status == EncapsulationReadStatus::ExtensibilityMismatch) {
         if (log_level >= LogLevel::Error) {
           ACE_ERROR((LM_ERROR,
                      "(%P|%t) ERROR: %CDataReaderImpl::lookup_instance: "
                      "to_encoding failed writer %C reader %C\n",
+                     TraitsType::type_name(),
                      LogGuid(sample.header_.publication_id_).c_str(),
                      LogGuid(subscription_id()).c_str()));
         }
         return;
       }
+      const Encoding& encoding = ser.encoding();
 
       if (decoding_modes_.find(encoding.kind()) == decoding_modes_.end()) {
         if (DCPS_debug_level >= 1) {
@@ -969,8 +971,6 @@ namespace OpenDDS {
           TraitsType::type_name(),
           Encoding::kind_to_string(encoding.kind()).c_str()));
       }
-
-      ser.encoding(encoding);
     }
 
     bool ser_ret = true;
@@ -1105,8 +1105,9 @@ protected:
       static_cast<Endianness>(sample.header_.byte_order_));
 
     if (encapsulated) {
-      EncapsulationHeader encap;
-      if (!(ser >> encap)) {
+      const EncapsulationReadStatus::Value read_status =
+        read_encapsulation_header(ser, type_support_->base_extensibility());
+      if (read_status == EncapsulationReadStatus::HeaderError) {
         if (DCPS_debug_level > 0) {
           ACE_ERROR((LM_ERROR, ACE_TEXT("(%P|%t) ERROR ")
             ACE_TEXT("%CDataReaderImpl::dds_demarshal: ")
@@ -1114,18 +1115,18 @@ protected:
             TraitsType::type_name()));
         }
         return;
-      }
-      Encoding encoding;
-      if (!to_encoding(encoding, encap, type_support_->base_extensibility())) {
+      } else if (read_status == EncapsulationReadStatus::ExtensibilityMismatch) {
         if (log_level >= LogLevel::Error) {
           ACE_ERROR((LM_ERROR,
                      "(%P|%t) ERROR: %CDataReaderImpl::dds_demarshal: "
                      "to_encoding failed writer %C reader %C\n",
+                     TraitsType::type_name(),
                      LogGuid(sample.header_.publication_id_).c_str(),
                      LogGuid(subscription_id()).c_str()));
         }
         return;
       }
+      const Encoding& encoding = ser.encoding();
 
       if (decoding_modes_.find(encoding.kind()) == decoding_modes_.end()) {
         if (DCPS_debug_level >= 1) {
@@ -1145,8 +1146,6 @@ protected:
           TraitsType::type_name(),
           Encoding::kind_to_string(encoding.kind()).c_str()));
       }
-
-      ser.encoding(encoding);
     }
 
     const bool key_only_marshaling =
@@ -1249,7 +1248,7 @@ protected:
     if (owner_manager) {
       ACE_GUARD(ACE_Recursive_Thread_Mutex, instance_guard, instances_lock_);
 
-      SharedInstanceMap_rch inst = dynamic_rchandle_cast<SharedInstanceMap>(owner_manager->get_instance_map(topic_servant_->type_name(), this));
+      SharedInstanceMap_rch inst = dynamic_rchandle_cast<SharedInstanceMap>(owner_manager->get_instance_map(topic_servant_->topic_name(), this));
       if (inst != 0) {
         const typename ReverseInstanceMap::iterator pos = reverse_instance_map_.find(handle);
         if (pos != reverse_instance_map_.end()) {
@@ -1824,7 +1823,7 @@ void store_instance_data(unique_ptr<MessageTypeWithAllocator> instance_data,
         }
 
         inst = dynamic_rchandle_cast<SharedInstanceMap>(
-          owner_manager->get_instance_map(topic_servant_->type_name(), this));
+          owner_manager->get_instance_map(topic_servant_->topic_name(), this));
         if (inst != 0) {
           typename InstanceMap::const_iterator const iter = inst->find(*instance_data);
           if (iter != inst->end ()) {
@@ -1869,7 +1868,7 @@ void store_instance_data(unique_ptr<MessageTypeWithAllocator> instance_data,
         if (!inst) {
           inst = make_rch<SharedInstanceMap>();
           owner_manager->set_instance_map(
-            topic_servant_->type_name(),
+            topic_servant_->topic_name(),
             inst,
             this);
         }
@@ -2124,7 +2123,15 @@ void finish_store_instance_data(unique_ptr<MessageTypeWithAllocator> instance_da
 
   instance_ptr->last_sequence_ = header.sequence_;
 
+#ifndef OPENDDS_NO_OBJECT_MODEL_PROFILE
+  const bool coherent_change = ptr->coherent_change_;
+#endif
+
+  // After this point ptr is visible to take/read paths that can remove and
+  // release it while status notifications temporarily release sample_lock_.
+  ptr->inc_ref();
   instance_ptr->rcvd_strategy_->add(ptr);
+  schedule_lifespan(ptr);
 
   if (! is_dispose_msg  && ! is_unregister_msg
       && instance_ptr->rcvd_samples_.size() > get_depth())
@@ -2158,11 +2165,13 @@ void finish_store_instance_data(unique_ptr<MessageTypeWithAllocator> instance_da
     }
 
 #ifndef OPENDDS_NO_OBJECT_MODEL_PROFILE
-  if (! ptr->coherent_change_) {
+  if (!coherent_change) {
 #endif
     RcHandle<OpenDDS::DCPS::SubscriberImpl> sub = get_subscriber_servant();
-    if (!sub || get_deleted())
+    if (!sub || get_deleted()) {
+      ptr->dec_ref();
       return;
+    }
 
     sub->set_status_changed_flag(DDS::DATA_ON_READERS_STATUS, true);
 
@@ -2201,6 +2210,7 @@ void finish_store_instance_data(unique_ptr<MessageTypeWithAllocator> instance_da
 #ifndef OPENDDS_NO_OBJECT_MODEL_PROFILE
   }
 #endif
+  ptr->dec_ref();
 }
 
 /// Release sample_lock_ during status notifications in store_instance_data()
@@ -2467,9 +2477,9 @@ unique_ptr<DataAllocator> data_allocator_;
 InstanceMap instance_map_;
 ReverseInstanceMap reverse_instance_map_;
 
-typedef DCPS::PmfSporadicTask<DataReaderImpl_T> DRISporadicTask;
+typedef DCPS::PmfNowEvent<DataReaderImpl_T> DRIEvent;
 
-RcHandle<DRISporadicTask> filter_delayed_sample_task_;
+SporadicEvent_rch filter_delayed_sample_task_;
 #ifdef OPENDDS_HAS_STD_SHARED_PTR
 typedef std::shared_ptr<const OpenDDS::DCPS::DataSampleHeader> DataSampleHeader_ptr;
 #else

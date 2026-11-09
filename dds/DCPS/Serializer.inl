@@ -266,6 +266,10 @@ Serializer::doread(char* dest, size_t size, bool swap, size_t offset)
 ACE_INLINE void
 Serializer::buffer_read(char* dest, size_t size, bool swap)
 {
+  if (size > length()) {
+    good_bit_ = false;
+    return;
+  }
   size_t offset = 0;
 
   while (size > offset) {
@@ -398,17 +402,71 @@ Serializer::good_bit() const
 ACE_INLINE size_t
 Serializer::length() const
 {
-  return good_bit_ && current_ ? current_->total_length() : 0;
+  if (!good_bit_ || !current_ || rpos_ > read_limit_) {
+    return 0;
+  }
+  return (std::min)(current_->total_length(), read_limit_ - rpos_);
+}
+
+ACE_INLINE bool
+Serializer::check_size(size_t count, size_t element_size, size_t element_alignment)
+{
+  if (!count) {
+    return true;
+  }
+
+  const size_t max = (std::numeric_limits<size_t>::max)();
+  if (element_size > max / count) {
+    good_bit_ = false;
+    return false;
+  }
+
+  // Bytes of alignment padding align_r() would insert before the first element;
+  // this must use the same formula as align_r() to stay in sync with it.
+  size_t padding = 0;
+  if (alignment() && element_alignment > 1 && current_) {
+    element_alignment = (std::min)(element_alignment, encoding().max_align());
+    padding = (element_alignment - reinterpret_cast<size_t>(current_->rd_ptr()) +
+      align_rshift_) % element_alignment;
+  }
+  const size_t bytes = count * element_size;
+  if (padding > length() || bytes > length() - padding) {
+    good_bit_ = false;
+    return false;
+  }
+  return true;
+}
+
+ACE_INLINE bool
+Serializer::set_read_limit(size_t size)
+{
+  const size_t max = (std::numeric_limits<size_t>::max)();
+  if (!good_bit_ || size > length() || size > max - rpos_) {
+    good_bit_ = false;
+    return false;
+  }
+  read_limit_ = rpos_ + size;
+  return true;
 }
 
 ACE_INLINE bool
 Serializer::skip(size_t n, int size)
 {
+  if (size < 0 || (n && static_cast<size_t>(size) >
+      (std::numeric_limits<size_t>::max)() / n)) {
+    good_bit_ = false;
+    return false;
+  }
   if (size > 1 && !align_r((std::min)(size_t(size), encoding().max_align()))) {
     return false;
   }
 
-  for (size_t len = n * static_cast<size_t>(size); len;) {
+  const size_t total = n * static_cast<size_t>(size);
+  if (total > length()) {
+    good_bit_ = false;
+    return false;
+  }
+  for (size_t len = total; len;) {
     if (!current_) {
       good_bit_ = false;
       return false;
@@ -425,7 +483,7 @@ Serializer::skip(size_t n, int size)
   }
 
   if (good_bit_) {
-    rpos_ += n * static_cast<size_t>(size);
+    rpos_ += total;
   }
   return good_bit();
 }
@@ -440,6 +498,10 @@ ACE_INLINE void
 Serializer::read_array(char* x, size_t size,
                        ACE_CDR::ULong length, bool swap)
 {
+  if (length && size > (std::numeric_limits<size_t>::max)() / length) {
+    good_bit_ = false;
+    return;
+  }
   if (!swap || size == 1) {
     //
     // No swap, copy direct.  This silently corrupts the data if there is
@@ -494,8 +556,15 @@ Serializer::write_array(const char* x, size_t size,
 ACE_INLINE bool
 Serializer::read_boolean_array(ACE_CDR::Boolean* x, ACE_CDR::ULong length)
 {
-  read_array(reinterpret_cast<char*>(x), boolean_cdr_size, length);
-  return good_bit();
+  for (ACE_CDR::ULong i = 0; i < length; ++i) {
+    ACE_CDR::Octet value = 0;
+    buffer_read(reinterpret_cast<char*>(&value), boolean_cdr_size, false);
+    if (!good_bit()) {
+      return false;
+    }
+    x[i] = value != 0;
+  }
+  return true;
 }
 
 ACE_INLINE bool
@@ -876,6 +945,10 @@ bool Serializer::read_delimiter(size_t& size)
   if (encoding().xcdr_version() == Encoding::XCDR_VERSION_2) {
     ACE_CDR::ULong dheader;
     if (*this >> dheader) {
+      if (dheader > length()) {
+        good_bit_ = false;
+        return false;
+      }
       size = dheader;
       return true;
     }
@@ -897,6 +970,18 @@ bool Serializer::write_list_end_parameter_id()
 {
   if (encoding().xcdr_version() == Encoding::XCDR_VERSION_1) {
     return align_w(xcdr1_pid_alignment) && *this << pid_list_end && *this << ACE_CDR::UShort(0);
+  }
+  return true;
+}
+
+ACE_INLINE
+bool Serializer::read_list_end_parameter_id()
+{
+  if (encoding().xcdr_version() == Encoding::XCDR_VERSION_1) {
+    unsigned id;
+    size_t size;
+    bool must_understand;
+    return read_parameter_id(id, size, must_understand) && id == pid_list_end && size == 0;
   }
   return true;
 }
@@ -1315,8 +1400,13 @@ operator>>(Serializer& s, long double& x)
 ACE_INLINE bool
 operator>>(Serializer& s, ACE_InputCDR::to_boolean x)
 {
-  s.buffer_read(reinterpret_cast<char*>(&x.ref_), boolean_cdr_size, s.swap_bytes());
-  return s.good_bit();
+  ACE_CDR::Octet value = 0;
+  s.buffer_read(reinterpret_cast<char*>(&value), boolean_cdr_size, false);
+  if (s.good_bit()) {
+    x.ref_ = value != 0;
+    return true;
+  }
+  return false;
 }
 
 ACE_INLINE bool
@@ -1659,13 +1749,17 @@ void serialized_size_delimiter(const Encoding& encoding, size_t& size)
 
 ACE_INLINE
 void serialized_size_parameter_id(
-  const Encoding& encoding, size_t& size, size_t& running_size)
+  const Encoding& encoding, size_t& size, size_t& running_size,
+  unsigned id, bool& previous_header_extended)
 {
   const Encoding::XcdrVersion xcdr = encoding.xcdr_version();
   if (xcdr == Encoding::XCDR_VERSION_1) {
+    if (running_size && size >= (1 << 16) && !previous_header_extended) {
+      running_size += uint32_cdr_size * 2;
+    }
     encoding.align(size, xcdr1_pid_alignment);
-    size += uint16_cdr_size * 2;
-    // TODO(iguessthislldo): Extended PID
+    previous_header_extended = id >= (1 << 14);
+    size += previous_header_extended ? uint32_cdr_size * 3 : uint16_cdr_size * 2;
 
     // Save and Zero Size to Reset the Alignment
     running_size += size;
@@ -1683,13 +1777,13 @@ void serialized_size_parameter_id(
 
 ACE_INLINE
 void serialized_size_list_end_parameter_id(
-  const Encoding& encoding, size_t& size, size_t& running_size)
+  const Encoding& encoding, size_t& size, size_t& running_size,
+  bool previous_header_extended)
 {
   if (encoding.xcdr_version() == Encoding::XCDR_VERSION_1) {
-    /*
-     * TODO(iguessthislldo): See how DDSXTY14-23 is resolved.
-     * https://github.com/OpenDDS/OpenDDS/pull/1722#discussion_r447165924
-     */
+    if (running_size && size >= (1 << 16) && !previous_header_extended) {
+      running_size += uint32_cdr_size * 2;
+    }
     encoding.align(size, xcdr1_pid_alignment);
     size += uint16_cdr_size * 2;
 
@@ -1718,7 +1812,7 @@ void Serializer::set_construction_status(ConstructionStatus cs)
 ACE_INLINE
 Serializer::RdState Serializer::rdstate() const
 {
-  RdState state(align_rshift_, rpos_);
+  RdState state(align_rshift_, rpos_, read_limit_);
   return state;
 }
 
@@ -1727,6 +1821,7 @@ void Serializer::rdstate(const RdState& state)
 {
   align_rshift_ = state.align_rshift;
   rpos_ = state.rpos;
+  read_limit_ = state.read_limit;
 }
 
 } // namespace DCPS

@@ -8,6 +8,7 @@
 
 #include "Spdp.h"
 
+#include <dds/DCPS/AddressFamily.h>
 #include <dds/DCPS/AtomicBool.h>
 #include <dds/DCPS/debug.h>
 
@@ -31,6 +32,10 @@ public:
   };
 
   RtpsDiscoveryConfig(const String& name);
+
+  DCPS::AddressFamily address_family() const;
+  bool address_family(DCPS::AddressFamily value);
+  bool address_family(const char* value);
 
   const String& config_prefix() const { return config_prefix_; }
   String config_key(const String& key) const;
@@ -236,6 +241,9 @@ public:
 
   CORBA::ULong participant_flags() const;
   void participant_flags(CORBA::ULong participant_flags);
+
+  bool use_rtps_duration_fraction() const;
+  void use_rtps_duration_fraction(bool value);
 
   bool sedp_responsive_mode() const;
   void sedp_responsive_mode(bool sedp_responsive_mode);

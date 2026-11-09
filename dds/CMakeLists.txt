@@ -13,6 +13,7 @@ find_package(OpenDDS REQUIRED NO_DEFAULTS TAO::tao_idl OpenDDS::opendds_idl ${dc
 include(opendds_build_helpers)
 
 add_library(OpenDDS_Dcps
+  DCPS/AddressFamily.cpp
   DCPS/BitPubListenerImpl.cpp
   DCPS/BuiltInTopicUtils.cpp
   DCPS/CoherentChangeControl.cpp
@@ -73,6 +74,7 @@ add_library(OpenDDS_Dcps
   DCPS/Qos_Helper.cpp
   DCPS/QueryConditionImpl.cpp
   DCPS/RawDataSample.cpp
+  DCPS/ReactorEvent.cpp
   DCPS/ReactorTask.cpp
   DCPS/ReadConditionImpl.cpp
   DCPS/ReceivedDataElementList.cpp
@@ -85,6 +87,7 @@ add_library(OpenDDS_Dcps
   DCPS/RepoIdBuilder.cpp
   DCPS/RepoIdConverter.cpp
   DCPS/RepoIdGenerator.cpp
+  DCPS/ResizeSeqNoInit.cpp
   DCPS/SafetyProfilePool.cpp
   DCPS/SafetyProfileSequences.cpp
   DCPS/SafetyProfileStreams.cpp
@@ -207,6 +210,7 @@ target_sources(OpenDDS_Dcps
     ../FACE/common.hpp
     ../FACE/types.hpp
     DCPS/AddressCache.h
+    DCPS/AddressFamily.h
     DCPS/AssociationData.h
     DCPS/AstNodeWrapper.h
     DCPS/Atomic.h
@@ -326,6 +330,7 @@ target_sources(OpenDDS_Dcps
     DCPS/RcEventHandler.h
     DCPS/RcHandle_T.h
     DCPS/RcObject.h
+    DCPS/ReactorEvent.h
     DCPS/ReactorTask.h
     DCPS/ReactorTask.inl
     DCPS/ReactorTask_rch.h
@@ -342,6 +347,7 @@ target_sources(OpenDDS_Dcps
     DCPS/RepoIdBuilder.inl
     DCPS/RepoIdConverter.h
     DCPS/RepoIdGenerator.h
+    DCPS/ResizeSeqNoInit.h
     DCPS/RestoreOutputStreamState.h
     DCPS/SafeBool_T.h
     DCPS/SafetyProfilePool.h
@@ -404,6 +410,7 @@ target_sources(OpenDDS_Dcps
     DCPS/XTypes/DynamicDataBase.h
     DCPS/XTypes/DynamicDataFactory.h
     DCPS/XTypes/DynamicDataImpl.h
+    DCPS/XTypes/DynamicDataJson.h
     DCPS/XTypes/DynamicDataReaderImpl.h
     DCPS/XTypes/DynamicDataWriterImpl.h
     DCPS/XTypes/DynamicDataXcdrReadImpl.h
@@ -575,6 +582,7 @@ target_include_directories(OpenDDS_Dcps
     "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 if(OPENDDS_RAPIDJSON)
+  target_sources(OpenDDS_Dcps PRIVATE DCPS/XTypes/DynamicDataJson.cpp)
   target_include_directories(OpenDDS_Dcps PUBLIC "$<BUILD_INTERFACE:${OPENDDS_RAPIDJSON}/include>")
 endif()
 target_link_libraries(OpenDDS_Dcps PUBLIC ${dcps_lib_deps})

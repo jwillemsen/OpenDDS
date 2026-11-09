@@ -14,12 +14,12 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - name: Checkout OpenDDS
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         path: OpenDDS
         submodules: true
     - name: Install Perl Dependencies
-      uses: shogo82148/actions-setup-perl@v1
+      uses: shogo82148/actions-setup-perl@v1.44.3
       with:
         install-modules: |
           Pithub

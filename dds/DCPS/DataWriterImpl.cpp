@@ -80,8 +80,8 @@ DataWriterImpl::DataWriterImpl()
   , is_bit_(false)
   , min_suspended_transaction_id_(0)
   , max_suspended_transaction_id_(0)
-  , liveliness_send_task_(make_rch<DWISporadicTask>(TheServiceParticipant->time_source(), TheServiceParticipant->reactor_task(), rchandle_from(this), &DataWriterImpl::liveliness_send_task))
-  , liveliness_lost_task_(make_rch<DWISporadicTask>(TheServiceParticipant->time_source(), TheServiceParticipant->reactor_task(), rchandle_from(this), &DataWriterImpl::liveliness_lost_task))
+  , liveliness_send_task_(make_rch<SporadicEvent>(TheServiceParticipant->event_dispatcher(), make_rch<DWIEvent>(rchandle_from(this), &DataWriterImpl::liveliness_send_task)))
+  , liveliness_lost_task_(make_rch<SporadicEvent>(TheServiceParticipant->event_dispatcher(), make_rch<DWIEvent>(rchandle_from(this), &DataWriterImpl::liveliness_lost_task)))
   , liveliness_send_interval_(TimeDuration::max_value)
   , liveliness_lost_interval_(TimeDuration::max_value)
   , liveliness_lost_(false)
@@ -1463,7 +1463,7 @@ DataWriterImpl::enable()
 
   try {
     this->enable_transport(reliable,
-                           this->qos_.durability.kind > DDS::VOLATILE_DURABILITY_QOS, participant.get());
+                           this->qos_.durability.kind > DDS::VOLATILE_DURABILITY_QOS, participant->get_id());
 
   } catch (const Transport::Exception&) {
     ACE_ERROR((LM_ERROR,
@@ -2824,7 +2824,7 @@ void DataWriterImpl::set_wait_pending_deadline(const MonotonicTimePoint& deadlin
 void DataWriterImpl::transport_discovery_change()
 {
   RcHandle<DomainParticipantImpl> participant = participant_servant_.lock();
-  populate_connection_info(participant.get());
+  populate_connection_info(participant->get_id());
   const TransportLocatorSeq& trans_conf_info = connection_info();
 
   ACE_Guard<ACE_Recursive_Thread_Mutex> guard(lock_);
@@ -2854,16 +2854,7 @@ DDS::ReturnCode_t DataWriterImpl::setup_serialization()
     // simply use qos_.representation.value[0].
     if (repr_to_encoding_kind(qos_.representation.value[0], encoding_kind)) {
       encoding_mode_ = EncodingMode(type_support_, encoding_kind, swap_bytes());
-      if (encoding_kind == Encoding::KIND_XCDR1 &&
-          type_support_->max_extensibility() == MUTABLE) {
-        if (log_level >= LogLevel::Notice) {
-          ACE_ERROR((LM_NOTICE, "(%P|%t) NOTICE: DataWriterImpl::setup_serialization: "
-            "Encountered unsupported combination of XCDR1 encoding and mutable extensibility "
-            "for writer of type %C\n",
-            type_support_->name()));
-        }
-        return DDS::RETCODE_ERROR;
-      } else if (encoding_kind == Encoding::KIND_UNALIGNED_CDR) {
+      if (encoding_kind == Encoding::KIND_UNALIGNED_CDR) {
         if (log_level >= LogLevel::Notice) {
           ACE_ERROR((LM_NOTICE, "(%P|%t) NOTICE: DataWriterImpl::setup_serialization: "
             "Unaligned CDR is not supported by transport types that require encapsulation\n"));

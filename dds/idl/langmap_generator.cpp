@@ -84,7 +84,7 @@ namespace {
 struct GeneratorBase {
   virtual ~GeneratorBase() {}
   virtual void init() = 0;
-  virtual void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq) = 0;
+  virtual void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq, AST_Typedef* tf) = 0;
   virtual std::string map_to_lang(AST_Map*) { return "<<unsupported>>"; }
   virtual bool gen_struct(AST_Structure* s, UTL_ScopedName* name, const std::vector<AST_Field*>& fields, AST_Type::SIZE_TYPE size, const char* x) = 0;
 
@@ -375,40 +375,6 @@ struct GeneratorBase {
     }
   };
 
-  static bool hasDefaultLabel(const std::vector<AST_UnionBranch*>& branches)
-  {
-    for (std::vector<AST_UnionBranch*>::const_iterator pos = branches.begin(), limit = branches.end();
-         pos != limit;
-         ++pos) {
-      AST_UnionBranch* branch = *pos;
-      for (unsigned long j = 0; j < branch->label_list_length(); ++j) {
-        AST_UnionLabel* label = branch->label(j);
-        if (label->label_kind() == AST_UnionLabel::UL_default) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  static size_t countLabels(const std::vector<AST_UnionBranch*>& branches)
-  {
-    size_t count = 0;
-
-    for (std::vector<AST_UnionBranch*>::const_iterator pos = branches.begin(), limit = branches.end();
-         pos != limit;
-         ++pos) {
-      count += (*pos)->label_list_length();
-    }
-
-    return count;
-  }
-
-  static bool needsDefault(const std::vector<AST_UnionBranch*>& branches, AST_Type* discriminator)
-  {
-    return !hasDefaultLabel(branches) && needSyntheticDefault(discriminator, countLabels(branches));
-  }
-
   static void generate_union_field(AST_UnionBranch* branch)
   {
     AST_Type* field_type = branch->field_type();
@@ -584,7 +550,7 @@ struct GeneratorBase {
 
     std::for_each(branches.begin(), branches.end(), GenerateUnionAccessors(u, discriminator));
 
-    if (needsDefault(branches, discriminator)) {
+    if (hasImplicitDefault(branches, discriminator)) {
       be_global->lang_header_ <<
         "  void _default() {\n"
         "    _reset();\n"
@@ -914,7 +880,7 @@ struct FaceGenerator : GeneratorBase {
     helpers_[HLP_FIXED_CONSTANT] = "::OpenDDS::FaceTypes::Fixed";
   }
 
-  void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq)
+  void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq, AST_Typedef*)
   {
     be_global->add_include("<tao/Seq_Out_T.h>", BE_GlobalData::STREAM_LANG_H);
     be_global->add_include("FACE/Sequence.h", BE_GlobalData::STREAM_LANG_H);
@@ -1142,7 +1108,7 @@ struct SafetyProfileGenerator : GeneratorBase {
     helpers_[HLP_ARR_FORANY] = "::TAO_Array_Forany_T";
   }
 
-  virtual void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq)
+  virtual void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq, AST_Typedef*)
   {
     be_global->add_include("<tao/Seq_Out_T.h>", BE_GlobalData::STREAM_LANG_H);
     be_global->add_include("dds/DCPS/SafetyProfileSequence.h", BE_GlobalData::STREAM_LANG_H);
@@ -1445,15 +1411,22 @@ struct Cxx11Generator : GeneratorBase {
   void gen_array_typedef(const char*, AST_Type*) {}
   void gen_typedef_varout(const char*, AST_Type*) {}
 
-  static void gen_sequence(const std::string& type, const std::string& elem, const std::string& ind = "")
+  static void gen_sequence(const std::string& type, const std::string& elem,
+    AST_Decl* node, const std::string& ind = "")
   {
-    be_global->add_include("<vector>", BE_GlobalData::STREAM_LANG_H);
-    be_global->lang_header_ << ind << "using " << type << " = std::vector<" << elem << ">;\n";
+    const char* header = "<vector>";
+    const char* vector = "std::vector";
+    if (be_global->no_init_before_deserialize(node)) {
+      header = "dds/DCPS/ResizeSeqNoInit.h";
+      vector = "OpenDDS::DCPS::OptionalInitVector";
+    }
+    be_global->add_include(header, BE_GlobalData::STREAM_LANG_H);
+    be_global->lang_header_ << ind << "using " << type << " = " << vector << "<" << elem << ">;\n";
   }
 
-  void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq)
+  void gen_sequence(UTL_ScopedName* tdname, AST_Sequence* seq, AST_Typedef* td)
   {
-    gen_sequence(tdname->last_component()->get_string(), map_type(seq->base_type()));
+    gen_sequence(tdname->last_component()->get_string(), map_type(seq->base_type()), td);
   }
 
   std::string map_to_lang(AST_Map* map)
@@ -1478,20 +1451,25 @@ struct Cxx11Generator : GeneratorBase {
       << exporter() << "void swap(" << nm << "& lhs, " << nm << "& rhs);\n\n";
   }
 
-  static void gen_struct_members(AST_Field* field)
+  static void gen_anon_field_types(const FieldInfo& af, AST_Field* field)
   {
-    FieldInfo af(*field);
     if (af.anonymous() && af.as_base_) {
       const std::string elem_type = generator_->map_type(af.as_base_);
       if (af.arr_) {
         gen_array(af.arr_, af.type_name_, elem_type, "  ");
       } else if (af.seq_) {
-        gen_sequence(af.type_name_, elem_type, "  ");
+        gen_sequence(af.type_name_, elem_type, field, "  ");
       }
     } else if (af.anonymous() && af.map_) {
       be_global->lang_header_ <<
         "  using AnonymousType_" << af.name_ << "_map = " << generator_->map_to_lang(af.map_) << ";\n";
     }
+  }
+
+  static void gen_struct_members(AST_Field* field)
+  {
+    FieldInfo af(*field);
+    gen_anon_field_types(af, field);
 
     const std::string lang_field_type = generator_->map_type(field);
     if (be_global->is_optional(field)) {
@@ -1631,17 +1609,7 @@ struct Cxx11Generator : GeneratorBase {
   static void union_accessors(AST_UnionBranch* branch)
   {
     FieldInfo af(*branch);
-    if (af.anonymous() && af.as_base_) {
-      const std::string elem_type = generator_->map_type(af.as_base_);
-      if (af.arr_) {
-        gen_array(af.arr_, af.type_name_, elem_type, "  ");
-      } else if (af.seq_) {
-        gen_sequence(af.type_name_, elem_type, "  ");
-      }
-    } else if (af.anonymous() && af.map_) {
-      be_global->lang_header_ <<
-        "  using AnonymousType_" << af.name_ << "_map = " << generator_->map_to_lang(af.map_) << ";\n";
-    }
+    gen_anon_field_types(af, branch);
 
     AST_Type* field_type = branch->field_type();
     AST_Type* actual_field_type = resolveActualType(field_type);
@@ -1782,7 +1750,7 @@ struct Cxx11Generator : GeneratorBase {
       "  void _d(" << d_type << " d) { _disc = d; }\n\n";
 
     std::for_each(branches.begin(), branches.end(), union_accessors);
-    if (needsDefault(branches, discriminator)) {
+    if (hasImplicitDefault(branches, discriminator)) {
       be_global->lang_header_ <<
         "  void _default() { _reset(); _activate(" << defVal << "); }\n\n";
     }
@@ -1985,7 +1953,7 @@ namespace {
   }
 }
 
-bool langmap_generator::gen_typedef(AST_Typedef*, UTL_ScopedName* name, AST_Type* base,
+bool langmap_generator::gen_typedef(AST_Typedef* td, UTL_ScopedName* name, AST_Type* base,
                                     const char*)
 {
   AST_Array* arr = 0;
@@ -1995,7 +1963,7 @@ bool langmap_generator::gen_typedef(AST_Typedef*, UTL_ScopedName* name, AST_Type
 
     switch (base->node_type()) {
     case AST_Decl::NT_sequence:
-      generator_->gen_sequence(name, dynamic_cast<AST_Sequence*>(base));
+      generator_->gen_sequence(name, dynamic_cast<AST_Sequence*>(base), td);
       break;
     case AST_Decl::NT_array:
       generator_->gen_array(name, arr = dynamic_cast<AST_Array*>(base));

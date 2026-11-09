@@ -13,10 +13,8 @@
 #include "LocalEntities.h"
 #include "MessageTypes.h"
 #include "MessageUtils.h"
+#include "ParameterListConverter.h"
 #include "TypeLookupTypeSupportImpl.h"
-#if OPENDDS_CONFIG_SECURITY
-#  include "ParameterListConverter.h"
-#endif
 #include "RtpsRpcTypeSupportImpl.h"
 #include "RtpsCoreTypeSupportImpl.h"
 #if OPENDDS_CONFIG_SECURITY
@@ -40,7 +38,7 @@
 #include <dds/DCPS/RcHandle_T.h>
 #include <dds/DCPS/Registered_Data_Types.h>
 #include <dds/DCPS/NetworkAddress.h>
-#include <dds/DCPS/SporadicTask.h>
+#include <dds/DCPS/SporadicEvent.h>
 #include <dds/DCPS/TopicDetails.h>
 #include <dds/DCPS/AtomicBool.h>
 
@@ -87,50 +85,48 @@ public:
 
   void rtps_relay_only(bool flag)
   {
-    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
     rtps_relay_only_ = flag;
   }
 
   bool rtps_relay_only() const
   {
-    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
     return rtps_relay_only_;
   }
 
   void use_rtps_relay(bool flag)
   {
-    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
     use_rtps_relay_ = flag;
   }
 
   bool use_rtps_relay() const
   {
-    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
     return use_rtps_relay_;
   }
 
   bool from_relay(const DCPS::NetworkAddress& from) const
   {
+    const bool use_relay = rtps_relay_only_ || use_rtps_relay_;
+
     ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
-    return (rtps_relay_only_ || use_rtps_relay_) && from == spdp_rtps_relay_address_;
+    return use_relay && from == spdp_rtps_relay_address_;
   }
 
   bool ignore_from_relay(const DCPS::NetworkAddress& from) const
   {
+    const bool ignore_relay = !(rtps_relay_only_ || use_rtps_relay_);
+
     ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
-    return (!(rtps_relay_only_ || use_rtps_relay_)) && from == spdp_rtps_relay_address_;
+    return ignore_relay && from == spdp_rtps_relay_address_;
   }
 
 #if OPENDDS_CONFIG_SECURITY
   void use_ice(bool flag)
   {
-    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
     use_ice_ = flag;
   }
 
   bool use_ice() const
   {
-    ACE_Guard<ACE_Thread_Mutex> guard(mutex_);
     return use_ice_;
   }
 #endif
@@ -298,10 +294,10 @@ private:
   mutable ACE_Thread_Mutex mutex_;
   const TimeDuration sedp_heartbeat_period_;
   const TimeDuration spdp_rtps_relay_send_period_;
-  bool rtps_relay_only_;
-  bool use_rtps_relay_;
+  DCPS::AtomicBool rtps_relay_only_;
+  DCPS::AtomicBool use_rtps_relay_;
 #if OPENDDS_CONFIG_SECURITY
-  bool use_ice_;
+  DCPS::AtomicBool use_ice_;
 #endif
   DCPS::NetworkAddress spdp_rtps_relay_address_;
   DCPS::FibonacciSequence<TimeDuration> relay_spdp_task_falloff_;
@@ -435,6 +431,8 @@ public:
 
   DCPS::JobQueue_rch job_queue() const { return job_queue_; }
 
+  DCPS::EventDispatcher_rch event_dispatcher() const { return event_dispatcher_; }
+
   void append_transport_statistics(DCPS::TransportStatisticsSequence& seq);
 
   void ignore(const GUID_t& to_ignore);
@@ -536,12 +534,11 @@ private:
   void rtps_relay_address(const DCPS::NetworkAddress& address);
   void stun_server_address(const DCPS::NetworkAddress& address);
 
-  void type_lookup_init(DCPS::ReactorTask_rch reactor_task)
+  void type_lookup_init()
   {
     if (!type_lookup_reply_deadline_processor_) {
       type_lookup_reply_deadline_processor_ =
-        DCPS::make_rch<EndpointManagerSporadic>(TheServiceParticipant->time_source(), reactor_task,
-                                                rchandle_from(this), &Sedp::remove_expired_endpoints);
+        DCPS::make_rch<DCPS::SporadicEvent>(event_dispatcher_, DCPS::make_rch<DCPS::PmfEvent<Sedp> >(rchandle_from(this), &Sedp::remove_expired_endpoints));
     }
   }
 
@@ -1392,15 +1389,13 @@ protected:
   typedef OPENDDS_MAP(MatchingPair, MatchingData) MatchingDataMap;
   typedef MatchingDataMap::iterator MatchingDataIter;
 
-  typedef DCPS::PmfSporadicTask<Sedp> EndpointManagerSporadic;
-
   void match(const GUID_t& writer, const GUID_t& reader);
 
   bool need_type_info(const XTypes::TypeInformation* type_info,
                       bool& need_minimal,
                       bool& need_complete) const;
 
-  void remove_expired_endpoints(const MonotonicTimePoint& /*now*/);
+  void remove_expired_endpoints();
 
   void match_continue(UsedEndpoints& ue,
                       const GUID_t& writer, const GUID_t& reader);
@@ -1510,6 +1505,7 @@ protected:
   ACE_Thread_Mutex& lock_;
   const GUID_t participant_id_;
   const CORBA::ULong participant_flags_;
+  const ParameterListConverter::RtpsDurationEncoding local_duration_encoding_;
   RepoIdSet ignored_guids_;
   unsigned int publication_counter_, subscription_counter_, topic_counter_;
   LocalPublicationMap local_publications_;
@@ -1523,7 +1519,7 @@ protected:
   XTypes::TypeLookupService_rch type_lookup_service_;
   OrigSeqNumberMap orig_seq_numbers_;
   MatchingDataMap matching_data_buffer_;
-  RcHandle<EndpointManagerSporadic> type_lookup_reply_deadline_processor_;
+  DCPS::SporadicEvent_rch type_lookup_reply_deadline_processor_;
   TimeDuration max_type_lookup_service_reply_period_;
   DCPS::SequenceNumber type_lookup_service_sequence_number_;
   const bool use_xtypes_;
